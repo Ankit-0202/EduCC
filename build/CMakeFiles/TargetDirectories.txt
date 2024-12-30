@@ -1,0 +1,3 @@
+/Users/ankit/C compiler/build/CMakeFiles/c99compiler.dir
+/Users/ankit/C compiler/build/CMakeFiles/edit_cache.dir
+/Users/ankit/C compiler/build/CMakeFiles/rebuild_cache.dir
