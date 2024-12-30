@@ -1,116 +1,74 @@
-# Makefile for C99 Compiler Project using CMake
+# =========================================================
+# EduCC - A Teaching C99 Compiler in C++
+# Updated Makefile (with LLVM integration)
+# =========================================================
 
-# ===========================
-# 1. Configuration
-# ===========================
+# --- Compiler and Tools ---
+CXX       := g++
+CXXFLAGS  := -std=c++17 -O2 -Wall -Wextra -pedantic
 
-# Default build type (can be overridden by specifying BUILD_TYPE=Release)
-BUILD_TYPE ?= Debug
+# If you have clang++, you can switch to:
+# CXX       := clang++
+# CXXFLAGS  := -std=c++17 -O2 -Wall -Wextra -pedantic
 
-# Number of parallel jobs (defaults to number of CPU cores)
-JOBS := $(shell sysctl -n hw.ncpu 2>/dev/null || echo 4)
+# --- LLVM Flags (via llvm-config) ---
+LLVM_CXXFLAGS := $(shell llvm-config --cxxflags)
+LLVM_LDFLAGS  := $(shell llvm-config --ldflags --libs core orcjit native)
 
-# Build directory
-BUILD_DIR := build/$(BUILD_TYPE)
+# We append them to our flags:
+CXXFLAGS  += $(LLVM_CXXFLAGS)
+LDFLAGS    = $(LLVM_LDFLAGS)
 
-# CMake executable
-CMAKE := cmake
+# --- Project Structure ---
+TARGET    := educc
+SRC_DIR   := src
+OBJ_DIR   := build
+INCLUDE_DIR := include
 
-# ===========================
-# 2. Phony Targets
-# ===========================
+# We'll store all object files in build/ preserving directory structure
+VPATH := $(SRC_DIR)
 
-.PHONY: all configure build clean rebuild run unit_test e2e_test test format help
+# Collect all .cpp files from the src directory (recursively):
+SOURCES := $(shell find $(SRC_DIR) -name '*.cpp')
 
-# ===========================
-# 3. Default Target
-# ===========================
+# Replace src/ with build/ in the object paths, e.g. src/lexer/Lexer.cpp => build/lexer/Lexer.o
+OBJECTS := $(patsubst $(SRC_DIR)/%.cpp, $(OBJ_DIR)/%.o, $(SOURCES))
 
-all: build
+# Include flags:
+INC_FLAGS := -I$(INCLUDE_DIR)
 
-# ===========================
-# 4. Configure Target
-# ===========================
+# By default, build the compiler
+all: $(TARGET)
 
-configure:
-	@echo "Configuring the project with CMake..."
-	@mkdir -p $(BUILD_DIR)
-	@$(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
+# Link step
+$(TARGET): $(OBJECTS)
+	@echo "Linking $(TARGET)..."
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
-# ===========================
-# 5. Build Target
-# ===========================
+# Compile step
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
+	@mkdir -p $(dir $@)
+	@echo "Compiling $<..."
+	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -c $< -o $@
 
-build: configure
-	@echo "Building the project..."
-	@$(CMAKE) --build $(BUILD_DIR) -- -j$(JOBS)
-
-# ===========================
-# 6. Clean Target
-# ===========================
-
+# Cleaning
 clean:
-	@echo "Cleaning build artifacts..."
-	@rm -rf build
+	@echo "Cleaning..."
+	rm -rf $(OBJ_DIR) 
+	rm -f $(TARGET)
 
-# ===========================
-# 7. Rebuild Target
-# ===========================
+# A simple test rule to demonstrate usage
+# 1) Builds the compiler
+# 2) Runs the compiler on sample.c -> sample.ll
+# 3) Uses clang to compile sample.ll -> sample (native executable)
+# 4) Runs ./sample
+test: all
+	@echo "Compiling sample.c with educc -> sample.ll"
+	@./$(TARGET) sample.c sample.ll
+	@echo "Now compiling sample.ll with clang -> sample"
+	@clang sample.ll -o sample
+	@echo "Running ./sample..."
+	@./sample
 
-rebuild: clean all
-
-# ===========================
-# 8. Run Executable Target
-# ===========================
-
-run: build
-	@echo "Running the executable..."
-	@./$(BUILD_DIR)/c99compiler
-
-# ===========================
-# 9. Unit Test Execution Target
-# ===========================
-
-unit_test: build
-	@echo "Running unit tests..."
-	@$(CMAKE) --build $(BUILD_DIR) --target run_unit_tests -- -j$(JOBS)
-
-# ===========================
-# 10. End-to-End (e2e) Test Execution Target
-# ===========================
-
-e2e_test: build
-	@echo "Running end-to-end tests..."
-	@$(CMAKE) --build $(BUILD_DIR) --target e2e_test -- -j$(JOBS)
-
-# ===========================
-# 11. Combined Test Target
-# ===========================
-
-test: unit_test e2e_test
-
-# ===========================
-# 12. Code Formatting Target
-# ===========================
-
-format:
-	@echo "Formatting code with clang-format..."
-	@find src tests -name '*.cpp' -o -name '*.h' | xargs clang-format -i
-
-# ===========================
-# 13. Help Target
-# ===========================
-
-help:
-	@echo "Available targets:"
-	@echo "  all        - Build the project (default)"
-	@echo "  configure  - Configure the project with CMake"
-	@echo "  build      - Configure and build the project"
-	@echo "  clean      - Remove build artifacts"
-	@echo "  rebuild    - Clean and rebuild the project"
-	@echo "  run        - Run the executable"
-	@echo "  unit_test  - Run unit tests"
-	@echo "  e2e_test   - Run end-to-end tests"
-	@echo "  test       - Run both unit and e2e tests"
-	@echo "  format     - Format code with clang-format"
-	@echo "  help       - Show this help message"
+# Phony targets
+.PHONY: all clean test
