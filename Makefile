@@ -1,208 +1,116 @@
-# Makefile for C99 Compiler Project
+# Makefile for C99 Compiler Project using CMake
 
 # ===========================
-# Compiler and Flags
+# 1. Configuration
 # ===========================
 
-# Compiler
-CXX := clang++
-
-# Default Build Type
+# Default build type (can be overridden by specifying BUILD_TYPE=Release)
 BUILD_TYPE ?= Debug
 
-# Compilation Flags
-CXXFLAGS := -std=c++17 -Wall -Wextra -Iinclude -MMD -MP
+# Number of parallel jobs (defaults to number of CPU cores)
+JOBS := $(shell sysctl -n hw.ncpu 2>/dev/null || echo 4)
 
-# Debug vs Release Flags
-ifeq ($(BUILD_TYPE),Debug)
-    CXXFLAGS += -g -O0
-    LDFLAGS :=
-else ifeq ($(BUILD_TYPE),Release)
-    CXXFLAGS += -O3
-    LDFLAGS := 
-else
-    $(error Unsupported BUILD_TYPE: $(BUILD_TYPE))
-endif
-
-# ===========================
-# Directories
-# ===========================
-
-# Source Directory
-SRC_DIR := src
-
-# Include Directory
-INCLUDE_DIR := include
-
-# Build Directory
+# Build directory
 BUILD_DIR := build/$(BUILD_TYPE)
 
-# Test Directory
-TEST_DIR := tests
+# CMake executable
+CMAKE := cmake
 
 # ===========================
-# Files
+# 2. Phony Targets
 # ===========================
 
-# Find all .cpp source files recursively in src/
-SRCS := $(shell find $(SRC_DIR) -name '*.cpp')
-
-# Generate corresponding object files in build/
-# For example: src/parser/Parser.cpp -> build/Debug/src/parser/Parser.o
-OBJS := $(patsubst $(SRC_DIR)/%.cpp, $(BUILD_DIR)/%.o, $(SRCS))
-
-# Dependency files
-DEPS := $(OBJS:.o=.d)
-
-# Target Executable
-TARGET := c99compiler
+.PHONY: all configure build clean rebuild run unit_test e2e_test test format help
 
 # ===========================
-# Test Files
+# 3. Default Target
 # ===========================
 
-# Find all test .cpp files
-TEST_SRCS := $(shell find $(TEST_DIR) -name '*_test.cpp')
-
-# Generate corresponding test object files
-TEST_OBJS := $(patsubst $(TEST_DIR)/%.cpp, $(BUILD_DIR)/tests/%.o, $(TEST_SRCS))
-
-# Test Executable
-TEST_TARGET := run_tests
+all: build
 
 # ===========================
-# OS Detection
+# 4. Configure Target
 # ===========================
 
-UNAME_S := $(shell uname -s)
+configure:
+	@echo "Configuring the project with CMake..."
+	@mkdir -p $(BUILD_DIR)
+	@$(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
 
 # ===========================
-# Default Target
+# 5. Build Target
 # ===========================
 
-.PHONY: all
-all: $(BUILD_DIR)/$(TARGET)
+build: configure
+	@echo "Building the project..."
+	@$(CMAKE) --build $(BUILD_DIR) -- -j$(JOBS)
 
 # ===========================
-# Linking
+# 6. Clean Target
 # ===========================
 
-# Link all object files to create the executable
-$(BUILD_DIR)/$(TARGET): $(OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
-
-# ===========================
-# Compilation
-# ===========================
-
-# Pattern rule to compile .cpp files to .o files
-# Includes automatic dependency generation
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
-	@mkdir -p $(dir $@)            # Create the directory for the object file if it doesn't exist
-	$(CXX) $(CXXFLAGS) -c -o $@ $<
-
-# ===========================
-# Test Compilation and Linking
-# ===========================
-
-# Compile test object files
-$(BUILD_DIR)/tests/%.o: $(TEST_DIR)/%.cpp
-	@mkdir -p $(dir $@)
-	$(CXX) $(CXXFLAGS) -c -o $@ $<
-
-# Link test executable
-$(BUILD_DIR)/$(TEST_TARGET): $(TEST_OBJS) $(OBJS)
-	@echo "Checking for Google Test libraries..."
-	@if [ "$(UNAME_S)" = "Darwin" ]; then \
-		GTEST_LIB1="/usr/local/lib/libgtest.a"; \
-		GTEST_LIB2="/opt/homebrew/lib/libgtest.a"; \
-	else \
-		GTEST_LIB1="/usr/lib/libgtest.a"; \
-		GTEST_LIB2="/usr/local/lib/libgtest.a"; \
-	fi; \
-	if [ -f $$GTEST_LIB1 ]; then \
-		echo "Found Google Test at $$GTEST_LIB1"; \
-		GTEST_LIB=$$GTEST_LIB1; \
-	elif [ -f $$GTEST_LIB2 ]; then \
-		echo "Found Google Test at $$GTEST_LIB2"; \
-		GTEST_LIB=$$GTEST_LIB2; \
-	else \
-		echo >&2 "Google Test library not found."; \
-		if [ "$(UNAME_S)" = "Darwin" ]; then \
-			echo >&2 "Run 'brew install googletest' to install Google Test."; \
-		else \
-			echo >&2 "Please install Google Test manually."; \
-		fi; \
-		exit 1; \
-	fi
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $$GTEST_LIB -lgtest_main -pthread
-
-# ===========================
-# Clean Target
-# ===========================
-
-.PHONY: clean
 clean:
-	rm -rf build
+	@echo "Cleaning build artifacts..."
+	@rm -rf build
 
 # ===========================
-# Rebuild Target
+# 7. Rebuild Target
 # ===========================
 
-.PHONY: rebuild
 rebuild: clean all
 
 # ===========================
-# Run Executable
+# 8. Run Executable Target
 # ===========================
 
-.PHONY: run
-run: $(BUILD_DIR)/$(TARGET)
-	@echo "Running $(TARGET)..."
-	./$(BUILD_DIR)/$(TARGET)
+run: build
+	@echo "Running the executable..."
+	@./$(BUILD_DIR)/c99compiler
 
 # ===========================
-# Format Target
+# 9. Unit Test Execution Target
 # ===========================
 
-.PHONY: format
+unit_test: build
+	@echo "Running unit tests..."
+	@$(CMAKE) --build $(BUILD_DIR) --target run_unit_tests -- -j$(JOBS)
+
+# ===========================
+# 10. End-to-End (e2e) Test Execution Target
+# ===========================
+
+e2e_test: build
+	@echo "Running end-to-end tests..."
+	@$(CMAKE) --build $(BUILD_DIR) --target e2e_test -- -j$(JOBS)
+
+# ===========================
+# 11. Combined Test Target
+# ===========================
+
+test: unit_test e2e_test
+
+# ===========================
+# 12. Code Formatting Target
+# ===========================
+
 format:
 	@echo "Formatting code with clang-format..."
-	@find $(SRC_DIR) $(TEST_DIR) -name '*.cpp' -o -name '*.h' | xargs clang-format -i
+	@find src tests -name '*.cpp' -o -name '*.h' | xargs clang-format -i
 
 # ===========================
-# Test Target
+# 13. Help Target
 # ===========================
 
-.PHONY: test
-test: $(BUILD_DIR)/$(TEST_TARGET)
-	@echo "Running unit tests..."
-	./$(BUILD_DIR)/$(TEST_TARGET)
-
-# ===========================
-# Help Target
-# ===========================
-
-.PHONY: help
 help:
 	@echo "Available targets:"
 	@echo "  all        - Build the project (default)"
+	@echo "  configure  - Configure the project with CMake"
+	@echo "  build      - Configure and build the project"
 	@echo "  clean      - Remove build artifacts"
 	@echo "  rebuild    - Clean and rebuild the project"
 	@echo "  run        - Run the executable"
-	@echo "  test       - Run unit tests"
+	@echo "  unit_test  - Run unit tests"
+	@echo "  e2e_test   - Run end-to-end tests"
+	@echo "  test       - Run both unit and e2e tests"
 	@echo "  format     - Format code with clang-format"
 	@echo "  help       - Show this help message"
-
-# ===========================
-# 6. Include Dependencies
-# ===========================
-
-# Include the dependency files if they exist
--include $(DEPS)
-
-# ===========================
-# Phony Targets
-# ===========================
-
-.PHONY: all clean rebuild run test format help
