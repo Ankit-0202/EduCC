@@ -45,11 +45,12 @@ private:
     std::unique_ptr<ReturnStatement> parseReturnStatement();
     std::unique_ptr<ExpressionStatement> parseExpressionStatement();
     std::unique_ptr<Expression> parseExpression();
-    std::unique_ptr<AssignmentExpression> parseAssignmentExpression();
-    std::unique_ptr<BinaryExpression> parseBinaryExpression();
-    std::unique_ptr<UnaryExpression> parseUnaryExpression();
+    std::unique_ptr<Expression> parseAssignmentExpression(); // Changed to return Expression
+    std::unique_ptr<Expression> parseBinaryExpression(); // Changed to return Expression
+    std::unique_ptr<Expression> parseUnaryExpression(); // Changed to return Expression
     std::unique_ptr<Literal> parseLiteral();
     std::unique_ptr<Identifier> parseIdentifier();
+    std::unique_ptr<Expression> parsePrimary(); // Added declaration
 
     // Helper for operator precedence
     std::unique_ptr<Expression> parseBinaryOpRHS(int expr_prec, std::unique_ptr<Expression> lhs);

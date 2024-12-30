@@ -1,4 +1,5 @@
 #include "parser/Parser.h"
+#include "parser/ASTNodes.h" // Include AST node definitions
 #include <stdexcept>
 #include <iostream>
 #include <cctype>
@@ -73,7 +74,7 @@ std::unique_ptr<ASTNode> Parser::parseDeclaration() {
                     } while (match(Lexer::TokenType::COMMA));
                 }
 
-                // Expect ')'
+                // Expect ')' 
                 if (!match(Lexer::TokenType::RPAREN)) {
                     error("Expected ')' after function parameters.", peek().line, peek().column);
                 }
@@ -278,7 +279,7 @@ std::unique_ptr<Expression> Parser::parseExpression() {
 }
 
 // Parse an assignment expression
-std::unique_ptr<AssignmentExpression> Parser::parseAssignmentExpression() {
+std::unique_ptr<Expression> Parser::parseAssignmentExpression() {
     auto lhs = parseBinaryExpression();
 
     if (match(Lexer::TokenType::ASSIGN)) {
@@ -286,7 +287,7 @@ std::unique_ptr<AssignmentExpression> Parser::parseAssignmentExpression() {
         return std::make_unique<AssignmentExpression>(std::move(lhs), std::move(rhs));
     }
 
-    return nullptr;
+    return lhs; // Return lhs if no assignment is present
 }
 
 // Parse a binary expression with precedence
@@ -307,9 +308,9 @@ std::unique_ptr<Expression> Parser::parseBinaryExpression() {
 }
 
 // Parse a unary expression
-std::unique_ptr<UnaryExpression> Parser::parseUnaryExpression() {
+std::unique_ptr<Expression> Parser::parseUnaryExpression() {
     if (match(Lexer::TokenType::MINUS) || match(Lexer::TokenType::NOT_EQUAL)) {
-        std::string op = tokens[current - 1].lexeme;
+        std::string op = previous().lexeme;
         auto operand = parseUnaryExpression();
         return std::make_unique<UnaryExpression>(op, std::move(operand));
     }
