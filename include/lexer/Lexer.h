@@ -75,6 +75,15 @@ private:
     void scanToken();
 
     /**
+     * Make sure the following lines exist and match EXACTLY the function
+     * definitions in Lexer.cpp:
+     */
+    void skipWhitespaceAndComments();
+    void scanNumber(size_t tokenStart, char firstChar);
+    void scanString(size_t tokenStart);
+    void scanCharLiteral(size_t tokenStart);
+
+    /**
      * @brief Advances the current position in the source by one character.
      * 
      * @return char The character at the old position.

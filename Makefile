@@ -5,7 +5,7 @@
 
 # --- Compiler and Tools ---
 CXX       := g++
-CXXFLAGS  := -std=c++17 -O2 -Wall -Wextra -pedantic
+CXXFLAGS  := -std=c++17 -O2 -Wall -Wextra -pedantic -Wno-unused-parameter
 
 # If you have clang++, you can switch to:
 # CXX       := clang++
