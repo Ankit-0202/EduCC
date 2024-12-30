@@ -186,7 +186,7 @@ void SemanticAnalyzer::analyzeIfStmt(IfStmtNode &node, std::shared_ptr<SymbolTab
 {
     // analyze condition as an expression
     if (node.condition()) {
-        analyzeExpr(*(ExprNode*)node.condition(), symTable);
+        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)node.condition()), symTable);
     }
     // then branch
     if (node.thenBranch()) {
@@ -203,7 +203,7 @@ void SemanticAnalyzer::analyzeWhileStmt(WhileStmtNode &node,
 {
     // analyze condition
     if (node.condition()) {
-        analyzeExpr(*(ExprNode*)node.condition(), symTable);
+        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)node.condition()), symTable);
     }
     // analyze body
     if (node.body()) {
@@ -223,11 +223,11 @@ void SemanticAnalyzer::analyzeForStmt(ForStmtNode &node,
     }
     // cond
     if (node.condition()) {
-        analyzeExpr(*(ExprNode*)node.condition(), forScope);
+        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)node.condition()), forScope);
     }
     // incr
     if (node.increment()) {
-        analyzeExpr(*(ExprNode*)node.increment(), forScope);
+        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)node.increment()), forScope);
     }
     // body
     if (node.body()) {
@@ -240,7 +240,7 @@ void SemanticAnalyzer::analyzeReturnStmt(ReturnStmtNode &node,
 {
     // If there's an expression, analyze it
     if (node.expr()) {
-        analyzeExpr(*(ExprNode*)node.expr(), symTable);
+        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)node.expr()), symTable);
     }
     // Real type checking would confirm that the returned expression
     // matches the function's return type, but we haven't tracked the
@@ -252,7 +252,7 @@ void SemanticAnalyzer::analyzeExprStmt(ExprStmtNode &node,
 {
     // If there's an expression, analyze it
     if (node.expr()) {
-        analyzeExpr(*(ExprNode*)node.expr(), symTable);
+        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)node.expr()), symTable);
     }
 }
 
@@ -285,21 +285,21 @@ void SemanticAnalyzer::analyzeExpr(ExprNode &expr, std::shared_ptr<SymbolTable> 
 
 void SemanticAnalyzer::analyzeBinaryExpr(BinaryExprNode &expr, std::shared_ptr<SymbolTable> symTable)
 {
-    // Check left
+    // left
     if (expr.left()) {
-        analyzeExpr(static_cast<ExprNode&>(*expr.left()), symTable);
+        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)expr.left()), symTable);
     }
-    // Check right
+    // right
     if (expr.right()) {
-        analyzeExpr(static_cast<ExprNode&>(*expr.right()), symTable);
+        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)expr.right()), symTable);
     }
-    // We could do type checking here, e.g., if left/right are numeric for '+', etc.
+    // Type checks could go here
 }
 
 void SemanticAnalyzer::analyzeUnaryExpr(UnaryExprNode &expr, std::shared_ptr<SymbolTable> symTable)
 {
     if (expr.operand()) {
-        analyzeExpr(static_cast<ExprNode&>(*expr.operand()), symTable);
+        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)expr.operand()), symTable);
     }
     // Check operator validity, e.g. can't increment a string literal, etc.
 }
@@ -316,7 +316,7 @@ void SemanticAnalyzer::analyzeCallExpr(CallExprNode &expr, std::shared_ptr<Symbo
 
     // analyze each argument
     for (auto &arg : expr.args()) {
-        analyzeExpr(static_cast<ExprNode&>(*arg), symTable);
+        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)arg.get()), symTable);
     }
     // Real type checking would compare argument types vs. function param types
 }

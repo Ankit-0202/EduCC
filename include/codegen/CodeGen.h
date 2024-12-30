@@ -67,7 +67,7 @@ private:
     llvm::IRBuilder<> m_builder;
 
     // A stack of CodeGenBlock scopes
-    std::stack<std::unique_ptr<CodeGenBlock>> m_blocks;
+    std::stack<CodeGenBlock*> m_blocks;
 
     // Helpers to manage the current block
     CodeGenBlock *currentBlock();

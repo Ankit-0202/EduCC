@@ -24,7 +24,12 @@ CodeGenerator::CodeGenerator(const std::string &moduleName)
 
 CodeGenerator::~CodeGenerator()
 {
-    // Optionally do cleanup, though unique_ptr handles the module
+    // Optionally do cleanup if blocks remain
+    while (!m_blocks.empty()) {
+        CodeGenBlock *topBlock = m_blocks.top();
+        m_blocks.pop();
+        delete topBlock;
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -35,7 +40,9 @@ void CodeGenerator::generateCode(TranslationUnitNode &root, const std::string &o
 {
     // Clear any leftover blocks
     while (!m_blocks.empty()) {
+        CodeGenBlock *topBlock = m_blocks.top();
         m_blocks.pop();
+        delete topBlock;
     }
 
     // Generate code
@@ -48,9 +55,11 @@ void CodeGenerator::generateCode(TranslationUnitNode &root, const std::string &o
 
     // Write to file
     std::error_code EC;
-    llvm::raw_fd_ostream dest(outputFilename, EC, llvm::sys::fs::F_Text);
+    // 'OF_None' instead of 'F_Text'
+    llvm::raw_fd_ostream dest(outputFilename, EC, llvm::sys::fs::OF_None);
     if (EC) {
-        std::cerr << "Could not open file: " << outputFilename << " Error: " << EC.message() << std::endl;
+        std::cerr << "Could not open file: " << outputFilename 
+                  << " Error: " << EC.message() << std::endl;
         return;
     }
     m_module->print(dest, nullptr);
@@ -66,18 +75,30 @@ void CodeGenerator::generateCode(TranslationUnitNode &root, const std::string &o
 CodeGenBlock *CodeGenerator::currentBlock()
 {
     if (m_blocks.empty()) return nullptr;
-    return m_blocks.top().get();
+    return m_blocks.top();
 }
 
 void CodeGenerator::pushBlock(llvm::BasicBlock *block)
 {
-    m_blocks.push(std::make_unique<CodeGenBlock>(block));
+    // Create a new CodeGenBlock on the heap
+    CodeGenBlock *newBlock = new CodeGenBlock(block);
+    // Push the pointer on the stack
+    m_blocks.push(newBlock);
+
+    // Point the IRBuilder at this BasicBlock
     m_builder.SetInsertPoint(block);
 }
 
 void CodeGenerator::popBlock()
 {
+    if (m_blocks.empty()) return;
+
+    CodeGenBlock *topBlock = m_blocks.top();
     m_blocks.pop();
+    // Clean up the heap allocation
+    delete topBlock;
+
+    // If there’s still a block left, set the IRBuilder to that block
     if (!m_blocks.empty()) {
         m_builder.SetInsertPoint(m_blocks.top()->block);
     }
@@ -153,7 +174,7 @@ void CodeGenerator::generateNode(ASTNode &node)
             generateExprStmt(static_cast<ExprStmtNode&>(node));
             break;
         default:
-            // If it’s an expression node, handle with generateExpr
+            // Expression nodes
             if (node.kind() == ASTNodeKind::BinaryExpr ||
                 node.kind() == ASTNodeKind::UnaryExpr ||
                 node.kind() == ASTNodeKind::CallExpr ||
@@ -163,8 +184,7 @@ void CodeGenerator::generateNode(ASTNode &node)
                 generateExpr(static_cast<ExprNode&>(node));
             }
             else {
-                // Possibly a FunctionDecl, etc. We might ignore or skip them.
-                // Or handle them if you want function prototypes.
+                // Possibly a FunctionDecl, etc.
             }
     }
 }
@@ -272,19 +292,15 @@ void CodeGenerator::generateFunctionDef(FunctionDefNode &node)
 void CodeGenerator::generateCompoundStmt(CompoundStmtNode &node)
 {
     // Create a new block scope (but keep in same function).
-    // We won't create a new BasicBlock unless we want distinct jump targets.
-    // For local variable declarations, we do them here with alloca.
-    // But let's maintain a new "logical scope" in our CodeGenBlock stack so that
-    // locals from this block don't leak out.
     llvm::BasicBlock *currentBB = m_builder.GetInsertBlock();
-    pushBlock(currentBB); // reuse the same BB, but we get a new map for locals
+    pushBlock(currentBB); // reuse the same BB, but new CodeGenBlock for local variables
 
     // Generate each statement inside
     for (auto &item : node.items()) {
         generateNode(*item);
-        // If we already inserted a terminator (like a return), we could break if we want
+        // If we already inserted a terminator (like return), we can stop
         if (currentBB->getTerminator()) {
-            break; // no further instructions
+            break;
         }
     }
 
@@ -307,8 +323,7 @@ void CodeGenerator::generateIfStmt(IfStmtNode &node)
         condVal = llvm::ConstantInt::get(llvm::Type::getInt1Ty(m_context), 0);
     }
 
-    // We have an i32 condition typically. Convert to i1:
-    // We'll do a simple != 0 check if condVal is i32
+    // Convert i32 -> i1 if needed
     if (condVal->getType()->isIntegerTy(32)) {
         condVal = m_builder.CreateICmpNE(
             condVal,
@@ -319,12 +334,10 @@ void CodeGenerator::generateIfStmt(IfStmtNode &node)
 
     llvm::Function *function = m_builder.GetInsertBlock()->getParent();
 
-    // create blocks for then, else, and merge
-    llvm::BasicBlock *thenBB = llvm::BasicBlock::Create(m_context, "then", function);
-    llvm::BasicBlock *elseBB = llvm::BasicBlock::Create(m_context, "else");
-    llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create(m_context, "ifend");
+    llvm::BasicBlock *thenBB  = llvm::BasicBlock::Create(m_context, "then", function);
+    llvm::BasicBlock *elseBB  = llvm::BasicBlock::Create(m_context, "else", function);
+    llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create(m_context, "ifend", function);
 
-    // if condVal => jump to thenBB, else => elseBB
     m_builder.CreateCondBr(condVal, thenBB, elseBB);
 
     // then block
@@ -334,35 +347,33 @@ void CodeGenerator::generateIfStmt(IfStmtNode &node)
     if (node.thenBranch()) {
         generateNode(*(ASTNode*)node.thenBranch());
     }
-    bool hasThenTerminator = (thenBB->getTerminator() != nullptr);
+    bool hasThenTerm = (thenBB->getTerminator() != nullptr);
     popBlock();
 
-    if (!hasThenTerminator) {
+    if (!hasThenTerm) {
         m_builder.CreateBr(mergeBB);
     }
 
     // else block
-    function->getBasicBlockList().push_back(elseBB);
     m_builder.SetInsertPoint(elseBB);
     pushBlock(elseBB);
 
     if (node.elseBranch()) {
         generateNode(*(ASTNode*)node.elseBranch());
     }
-    bool hasElseTerminator = (elseBB->getTerminator() != nullptr);
+    bool hasElseTerm = (elseBB->getTerminator() != nullptr);
     popBlock();
 
-    if (!hasElseTerminator) {
+    if (!hasElseTerm) {
         m_builder.CreateBr(mergeBB);
     }
 
-    // merge block
-    function->getBasicBlockList().push_back(mergeBB);
+    // merge
     m_builder.SetInsertPoint(mergeBB);
 }
 
 ///////////////////////////////////////////////////////////////////////////
-// While Statement
+// WhileStmt
 ///////////////////////////////////////////////////////////////////////////
 
 void CodeGenerator::generateWhileStmt(WhileStmtNode &node)
@@ -370,13 +381,13 @@ void CodeGenerator::generateWhileStmt(WhileStmtNode &node)
     llvm::Function *function = m_builder.GetInsertBlock()->getParent();
 
     llvm::BasicBlock *condBB = llvm::BasicBlock::Create(m_context, "whilecond", function);
-    llvm::BasicBlock *loopBB = llvm::BasicBlock::Create(m_context, "whileloop");
-    llvm::BasicBlock *exitBB = llvm::BasicBlock::Create(m_context, "whileexit");
+    llvm::BasicBlock *loopBB = llvm::BasicBlock::Create(m_context, "whileloop", function);
+    llvm::BasicBlock *exitBB = llvm::BasicBlock::Create(m_context, "whileexit", function);
 
-    // jump to condition block
+    // jump to cond
     m_builder.CreateBr(condBB);
 
-    // condBB
+    // cond
     m_builder.SetInsertPoint(condBB);
     pushBlock(condBB);
 
@@ -385,58 +396,51 @@ void CodeGenerator::generateWhileStmt(WhileStmtNode &node)
         condVal = generateExpr(*(ExprNode*)node.condition());
     }
     if (!condVal) {
-        condVal = llvm::ConstantInt::get(llvm::Type::getInt1Ty(m_context), 1); // default true
+        condVal = llvm::ConstantInt::get(llvm::Type::getInt1Ty(m_context), 1);
     }
-    // convert i32 -> i1 if needed
+
     if (condVal->getType()->isIntegerTy(32)) {
-        condVal = m_builder.CreateICmpNE(
-            condVal,
-            llvm::ConstantInt::get(condVal->getType(), 0),
-            "whilecond"
-        );
+        condVal = m_builder.CreateICmpNE(condVal,
+            llvm::ConstantInt::get(condVal->getType(), 0), "whilecond");
     }
     m_builder.CreateCondBr(condVal, loopBB, exitBB);
     popBlock();
 
-    // loopBB
-    function->getBasicBlockList().push_back(loopBB);
+    // loop
     m_builder.SetInsertPoint(loopBB);
     pushBlock(loopBB);
 
     if (node.body()) {
         generateNode(*(ASTNode*)node.body());
     }
-
     if (!loopBB->getTerminator()) {
-        // jump back to cond
         m_builder.CreateBr(condBB);
     }
     popBlock();
 
-    // exitBB
-    function->getBasicBlockList().push_back(exitBB);
+    // exit
     m_builder.SetInsertPoint(exitBB);
 }
 
 ///////////////////////////////////////////////////////////////////////////
-// For Statement
+// ForStmt
 ///////////////////////////////////////////////////////////////////////////
 
 void CodeGenerator::generateForStmt(ForStmtNode &node)
 {
     llvm::Function *function = m_builder.GetInsertBlock()->getParent();
 
-    // We'll create blocks: forinit, forcond, forbody, forincr, forexit
+    // We'll create blocks: forinit, forcond, forloop, forincr, forexit
     llvm::BasicBlock *initBB = llvm::BasicBlock::Create(m_context, "forinit", function);
-    llvm::BasicBlock *condBB = llvm::BasicBlock::Create(m_context, "forcond");
-    llvm::BasicBlock *loopBB = llvm::BasicBlock::Create(m_context, "forloop");
-    llvm::BasicBlock *incrBB = llvm::BasicBlock::Create(m_context, "forincr");
-    llvm::BasicBlock *exitBB = llvm::BasicBlock::Create(m_context, "forexit");
+    llvm::BasicBlock *condBB = llvm::BasicBlock::Create(m_context, "forcond", function);
+    llvm::BasicBlock *loopBB = llvm::BasicBlock::Create(m_context, "forloop", function);
+    llvm::BasicBlock *incrBB = llvm::BasicBlock::Create(m_context, "forincr", function);
+    llvm::BasicBlock *exitBB = llvm::BasicBlock::Create(m_context, "forexit", function);
 
-    // jump to initBB
+    // jump to init
     m_builder.CreateBr(initBB);
 
-    // initBB
+    // init
     m_builder.SetInsertPoint(initBB);
     pushBlock(initBB);
     if (node.init()) {
@@ -447,8 +451,7 @@ void CodeGenerator::generateForStmt(ForStmtNode &node)
     }
     popBlock();
 
-    // condBB
-    function->getBasicBlockList().push_back(condBB);
+    // cond
     m_builder.SetInsertPoint(condBB);
     pushBlock(condBB);
 
@@ -461,16 +464,12 @@ void CodeGenerator::generateForStmt(ForStmtNode &node)
     }
     if (condVal->getType()->isIntegerTy(32)) {
         condVal = m_builder.CreateICmpNE(
-            condVal,
-            llvm::ConstantInt::get(condVal->getType(), 0),
-            "forcond"
-        );
+            condVal, llvm::ConstantInt::get(condVal->getType(), 0), "forcond");
     }
     m_builder.CreateCondBr(condVal, loopBB, exitBB);
     popBlock();
 
-    // loopBB
-    function->getBasicBlockList().push_back(loopBB);
+    // loop
     m_builder.SetInsertPoint(loopBB);
     pushBlock(loopBB);
     if (node.body()) {
@@ -481,8 +480,7 @@ void CodeGenerator::generateForStmt(ForStmtNode &node)
     }
     popBlock();
 
-    // incrBB
-    function->getBasicBlockList().push_back(incrBB);
+    // incr
     m_builder.SetInsertPoint(incrBB);
     pushBlock(incrBB);
     if (node.increment()) {
@@ -493,13 +491,12 @@ void CodeGenerator::generateForStmt(ForStmtNode &node)
     }
     popBlock();
 
-    // exitBB
-    function->getBasicBlockList().push_back(exitBB);
+    // exit
     m_builder.SetInsertPoint(exitBB);
 }
 
 ///////////////////////////////////////////////////////////////////////////
-// Return Statement
+// ReturnStmt
 ///////////////////////////////////////////////////////////////////////////
 
 void CodeGenerator::generateReturnStmt(ReturnStmtNode &node)
@@ -525,7 +522,7 @@ void CodeGenerator::generateExprStmt(ExprStmtNode &node)
     if (node.expr()) {
         generateExpr(*(ExprNode*)node.expr());
     }
-    // discard the result
+    // discard result
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -563,45 +560,30 @@ llvm::Value* CodeGenerator::generateBinaryExpr(BinaryExprNode &expr)
     if (op == "=") {
         // L must be an identifier or something that can be assigned to
         // For simplicity, we assume L is an identifier expression.
-        auto *identifierLeft = dynamic_cast<IdentifierExprNode*>(expr.left());
-        if (!identifierLeft) {
-            // In a real compiler, you'd handle array, pointer, etc.
-            return nullptr;
-        }
-        // R is the value to store
+        
+        auto *identifierLeft = dynamic_cast<IdentifierExprNode*>(
+            const_cast<ASTNode*>(expr.left())
+        );
+        if (!identifierLeft) return nullptr;
         setVariableValue(identifierLeft->name(), R);
         return R;
     }
 
-    // For arithmetic, we assume L and R are i32
-    // Real compilers must handle type checks, promotions, etc.
+    // assume i32 arithmetic
     if (L->getType()->isIntegerTy() && R->getType()->isIntegerTy()) {
-        if (op == "+") {
-            return m_builder.CreateAdd(L, R, "addtmp");
-        } else if (op == "-") {
-            return m_builder.CreateSub(L, R, "subtmp");
-        } else if (op == "*") {
-            return m_builder.CreateMul(L, R, "multmp");
-        } else if (op == "/") {
-            return m_builder.CreateSDiv(L, R, "divtmp");
-        } else if (op == "%") {
-            return m_builder.CreateSRem(L, R, "modtmp");
-        } else if (op == "==") {
-            return m_builder.CreateICmpEQ(L, R, "eqtmp");
-        } else if (op == "!=") {
-            return m_builder.CreateICmpNE(L, R, "netmp");
-        } else if (op == "<") {
-            return m_builder.CreateICmpSLT(L, R, "lttmp");
-        } else if (op == ">") {
-            return m_builder.CreateICmpSGT(L, R, "gttmp");
-        } else if (op == "<=") {
-            return m_builder.CreateICmpSLE(L, R, "letmp");
-        } else if (op == ">=") {
-            return m_builder.CreateICmpSGE(L, R, "getmp");
-        }
+        // Otherwise, we skip float handling for brevity. Expand as needed.    
+        if (op == "+")  return m_builder.CreateAdd(L, R, "addtmp");
+        if (op == "-")  return m_builder.CreateSub(L, R, "subtmp");
+        if (op == "*")  return m_builder.CreateMul(L, R, "multmp");
+        if (op == "/")  return m_builder.CreateSDiv(L, R, "divtmp");
+        if (op == "%")  return m_builder.CreateSRem(L, R, "modtmp");
+        if (op == "==") return m_builder.CreateICmpEQ(L, R, "eqtmp");
+        if (op == "!=") return m_builder.CreateICmpNE(L, R, "netmp");
+        if (op == "<")  return m_builder.CreateICmpSLT(L, R, "lttmp");
+        if (op == ">")  return m_builder.CreateICmpSGT(L, R, "gttmp");
+        if (op == "<=") return m_builder.CreateICmpSLE(L, R, "letmp");
+        if (op == ">=") return m_builder.CreateICmpSGE(L, R, "getmp");
     }
-
-    // Otherwise, we skip float handling for brevity. Expand as needed.
     return nullptr;
 }
 
@@ -625,7 +607,9 @@ llvm::Value* CodeGenerator::generateUnaryExpr(UnaryExprNode &expr)
     else if (op == "++" || op == "--") {
         // pre-increment or pre-decrement
         // we assume operand is an identifier
-        auto *identifier = dynamic_cast<IdentifierExprNode*>(expr.operand());
+        auto *identifier = dynamic_cast<IdentifierExprNode*>(
+            const_cast<ASTNode*>(expr.operand()) // remove const
+        );
         if (!identifier) return nullptr;
 
         // load current
@@ -633,15 +617,10 @@ llvm::Value* CodeGenerator::generateUnaryExpr(UnaryExprNode &expr)
         if (!val) return nullptr;
 
         llvm::Value *one = llvm::ConstantInt::get(val->getType(), 1);
-        llvm::Value *res = nullptr;
-        if (op == "++") {
-            res = m_builder.CreateAdd(val, one, "inc");
-        } else {
-            res = m_builder.CreateSub(val, one, "dec");
-        }
-        // store back
+        llvm::Value *res = (op == "++")
+            ? m_builder.CreateAdd(val, one, "inc")
+            : m_builder.CreateSub(val, one, "dec");
         setVariableValue(identifier->name(), res);
-        // the expression value is the updated value
         return res;
     }
 
@@ -699,39 +678,39 @@ llvm::Value* CodeGenerator::generateIdentifierExpr(IdentifierExprNode &expr)
 
 llvm::Value* CodeGenerator::getVariableValue(const std::string &name)
 {
-    // Walk up the block stack to find a local
-    std::stack<std::unique_ptr<CodeGenBlock>> tmpStack = m_blocks;
+    // copy the stack of CodeGenBlock* so we can search it
+    std::stack<CodeGenBlock*> tmpStack = m_blocks;
     while (!tmpStack.empty()) {
-        auto &blk = tmpStack.top();
+        CodeGenBlock *blk = tmpStack.top();
+        tmpStack.pop();
+
         auto it = blk->locals.find(name);
         if (it != blk->locals.end()) {
             // load from alloca
             return m_builder.CreateLoad(it->second->getAllocatedType(), it->second, name.c_str());
         }
-        tmpStack.pop();
     }
 
-    // Otherwise, maybe it's a global
+    // else check global
     if (auto *gvar = m_module->getGlobalVariable(name)) {
         return m_builder.CreateLoad(gvar->getValueType(), gvar, name.c_str());
     }
-
     // not found
     return nullptr;
 }
 
 void CodeGenerator::setVariableValue(const std::string &name, llvm::Value* value)
 {
-    // same logic as getVariableValue, but store
-    std::stack<std::unique_ptr<CodeGenBlock>> tmpStack = m_blocks;
+    std::stack<CodeGenBlock*> tmpStack = m_blocks;
     while (!tmpStack.empty()) {
-        auto &blk = tmpStack.top();
+        CodeGenBlock *blk = tmpStack.top();
+        tmpStack.pop();
+
         auto it = blk->locals.find(name);
         if (it != blk->locals.end()) {
             m_builder.CreateStore(value, it->second);
             return;
         }
-        tmpStack.pop();
     }
 
     // check global
@@ -739,5 +718,5 @@ void CodeGenerator::setVariableValue(const std::string &name, llvm::Value* value
         m_builder.CreateStore(value, gvar);
         return;
     }
-    // not found
+    // not found -> do nothing or error
 }
