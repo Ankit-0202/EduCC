@@ -76,6 +76,12 @@ private:
      */
     Token expect(TokenType ttype, const std::string &errorMsg);
 
+    /**
+     * @brief Throws a std::runtime_error indicating a parsing error.
+     * @param message The error message.
+     */
+    void error(const std::string &message) const;
+
     // -----------------------------------------------------------------------
     //  Grammar / Parsing Methods
     // -----------------------------------------------------------------------
@@ -101,7 +107,7 @@ private:
     std::pair<std::string, std::string> parseParamDeclaration();
 
     /**
-     * @brief Parses a variable declaration at global or local scope.
+     * @brief Parses a variable declaration at global or local scope (no initializer).
      */
     std::unique_ptr<VarDeclNode> parseVarDeclaration(const std::string &type, const std::string &name);
 
@@ -109,6 +115,11 @@ private:
      * @brief Parses a statement (if, while, for, return, compound, expression, etc.).
      */
     std::unique_ptr<StmtNode> parseStatement();
+
+    /**
+     * @brief Parse a local variable declaration statement, e.g. "int sum = x + y;".
+     */
+    std::unique_ptr<StmtNode> parseLocalDeclarationStatement();
 
     /**
      * @brief Parses a compound statement (i.e., '{' stmt* '}').
@@ -188,14 +199,10 @@ private:
      */
     bool isLiteral(const Token &tok) const;
 
-    // -----------------------------------------------------------------------
-    //  Error handling
-    // -----------------------------------------------------------------------
     /**
-     * @brief Throws a std::runtime_error indicating a parsing error.
-     * @param message The error message.
+     * @brief Utility to check if a token type is a known "type keyword" (int/float/etc).
      */
-    [[noreturn]] void error(const std::string &message) const;
+    bool isTypeKeyword(TokenType tt) const;
 };
 
 #endif // EDUCC_PARSER_H

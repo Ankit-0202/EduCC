@@ -97,16 +97,9 @@ std::unique_ptr<TranslationUnitNode> Parser::parseTranslationUnit()
 
 std::unique_ptr<ASTNode> Parser::parseExternalDeclaration()
 {
-    // We expect a type (int/float/char/double/void) first.
-    // In a real C parser, you'd parse a full type specifier (with pointers, etc.).
-    // We'll keep it simple.
-    if (currentToken().type() == TokenType::KW_INT ||
-        currentToken().type() == TokenType::KW_FLOAT ||
-        currentToken().type() == TokenType::KW_CHAR ||
-        currentToken().type() == TokenType::KW_DOUBLE ||
-        currentToken().type() == TokenType::KW_VOID)
+    if (isTypeKeyword(currentToken().type()))
     {
-        Token typeTok = advance(); // consume the type
+        Token typeTok = advance(); 
         std::string typeStr = typeTok.lexeme();
 
         // Next must be an identifier (the function or variable name)
@@ -116,7 +109,7 @@ std::unique_ptr<ASTNode> Parser::parseExternalDeclaration()
         Token nameTok = advance();
         std::string nameStr = nameTok.lexeme();
 
-        // Next, either '(' => function definition/declaration, or something else => variable
+        // Check if next is '(' => function definition, else => global var
         if (match(TokenType::LPAREN)) {
             // It's a function
             return parseFunctionDefinition(typeStr, nameStr);
@@ -148,14 +141,13 @@ std::unique_ptr<FunctionDefNode> Parser::parseFunctionDefinition(const std::stri
         expect(TokenType::RPAREN, "Expected ')' after function parameter list");
     }
 
-    // At this point, we expect a function body (compound statement) or semicolon if it were a prototype
-    // We'll assume we go for a definition => parse compound statement
+    // Build function decl
     auto funcDecl = std::make_unique<FunctionDeclNode>(
         type, name, paramTypes, paramNames,
         currentToken().line(), currentToken().column()
     );
 
-    // Parse function body
+    // Parse body => compound statement
     auto body = parseCompoundStatement();
 
     // Return a FunctionDefNode
@@ -187,13 +179,7 @@ void Parser::parseParameterList(std::vector<std::string> &paramTypes,
 
 std::pair<std::string, std::string> Parser::parseParamDeclaration()
 {
-    // Expect a type
-    if (currentToken().type() != TokenType::KW_INT &&
-        currentToken().type() != TokenType::KW_FLOAT &&
-        currentToken().type() != TokenType::KW_CHAR &&
-        currentToken().type() != TokenType::KW_DOUBLE &&
-        currentToken().type() != TokenType::KW_VOID)
-    {
+    if (!isTypeKeyword(currentToken().type())) {
         error("Expected type specifier in function parameter");
     }
     Token typeTok = advance();
@@ -211,9 +197,8 @@ std::pair<std::string, std::string> Parser::parseParamDeclaration()
 
 std::unique_ptr<VarDeclNode> Parser::parseVarDeclaration(const std::string &type, const std::string &name)
 {
-    // We might handle optional initializers: e.g., "int x = 5;"
-    // For now, skip it or parse a quick optional assignment
-    // If we see '=', parse an initializer expression
+    // Optional initializer
+    // If the next token is '=', parse an initializer expression
     // We'll skip advanced type qualifiers/pointers for brevity
     // This method returns a VarDeclNode; we don't store the initializer in AST for now.
 
@@ -231,7 +216,15 @@ std::unique_ptr<VarDeclNode> Parser::parseVarDeclaration(const std::string &type
 
 std::unique_ptr<StmtNode> Parser::parseStatement()
 {
-    // Check the token and branch to the correct statement type
+    TokenType tk = currentToken().type();
+
+    // If this is a local variable declaration like "int x = 5;"
+    // or "float y;"
+    if (isTypeKeyword(tk)) {
+        // parse local var declaration statement
+        return parseLocalDeclarationStatement();
+    }
+
     if (match(TokenType::LBRACE)) {
         // Compound statement
         // We already consumed '{', so parse the inside:
@@ -266,6 +259,53 @@ std::unique_ptr<StmtNode> Parser::parseStatement()
         // Expression statement or empty statement
         return parseExpressionStatement();
     }
+}
+
+/**
+ * @brief Parse a local variable declaration statement, e.g. "int sum = x + y;".
+ *
+ * This method expects the current token to be a type keyword (checked by caller).
+ */
+std::unique_ptr<StmtNode> Parser::parseLocalDeclarationStatement()
+{
+    // We already know currentToken() is a type
+    Token typeTok = advance(); // consume the type
+    std::string typeStr = typeTok.lexeme();
+
+    // Next must be an identifier
+    if (currentToken().type() != TokenType::IDENTIFIER) {
+        error("Expected identifier in local variable declaration");
+    }
+    Token nameTok = advance();
+    std::string nameStr = nameTok.lexeme();
+
+    // Optional initializer
+    std::unique_ptr<ExprNode> initExpr = nullptr;
+    if (match(TokenType::ASSIGN)) {
+        // parse an expression for initializer
+        initExpr = parseExpression();
+    }
+
+    // Expect semicolon
+    expect(TokenType::SEMICOLON, "Expected ';' after local variable declaration");
+
+    // Build a VarDeclNode
+    auto varDeclNode = std::make_unique<VarDeclNode>(
+        typeStr,
+        nameStr,
+        currentToken().line(),
+        currentToken().column()
+    );
+
+    // If you want, you can store initExpr in a custom node type (e.g. `LocalVarDeclStmtNode`)
+    // for codegen to do an alloca + store. Here, let's just store it in a "DeclStmt" for simplicity.
+
+    return std::make_unique<DeclStmtNode>(
+        std::move(varDeclNode),
+        std::move(initExpr),
+        currentToken().line(),
+        currentToken().column()
+    );
 }
 
 std::unique_ptr<CompoundStmtNode> Parser::parseCompoundStatement()
@@ -344,9 +384,15 @@ std::unique_ptr<ForStmtNode> Parser::parseForStatement()
     // parse init (could be an expression statement or var decl or empty)
     std::unique_ptr<ASTNode> init = nullptr;
     if (!match(TokenType::SEMICOLON)) {
-        // we didn't match ';' => parse an expression statement
-        auto exprStmt = parseExpressionStatement();
-        init = std::move(exprStmt);
+        // it might be a local decl or an expression statement
+        // if the next token is type, parse local decl
+        if (isTypeKeyword(currentToken().type())) {
+            init = parseLocalDeclarationStatement();
+        } else {
+            // parse expression statement
+            auto exprStmt = parseExpressionStatement();
+            init = std::move(exprStmt);
+        }
     }
 
     // parse condition
@@ -737,4 +783,16 @@ bool Parser::isLiteral(const Token &tok) const
         default:
             return false;
     }
+}
+
+/**
+ * @brief Utility to check if a token type is a known "type keyword"
+ */
+bool Parser::isTypeKeyword(TokenType tt) const
+{
+    return (tt == TokenType::KW_INT ||
+            tt == TokenType::KW_FLOAT ||
+            tt == TokenType::KW_CHAR ||
+            tt == TokenType::KW_DOUBLE ||
+            tt == TokenType::KW_VOID);
 }

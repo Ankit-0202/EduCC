@@ -584,6 +584,36 @@ public:
     }
 };
 
+class DeclStmtNode : public StmtNode
+{
+private:
+    std::unique_ptr<VarDeclNode> m_varDecl;
+    std::unique_ptr<ExprNode> m_initExpr;
+
+public:
+    DeclStmtNode(std::unique_ptr<VarDeclNode> varDecl,
+                 std::unique_ptr<ExprNode> initExpr,
+                 size_t line, size_t col)
+        : StmtNode(ASTNodeKind::ExprStmt, line, col),  // or define a new ASTNodeKind::DeclStmt
+          m_varDecl(std::move(varDecl)),
+          m_initExpr(std::move(initExpr))
+    {}
+
+    const VarDeclNode* varDecl() const { return m_varDecl.get(); }
+    const ExprNode* initExpr() const { return m_initExpr.get(); }
+
+    std::string toString() const override
+    {
+        std::ostringstream oss;
+        oss << "(DeclStmt var=" << (m_varDecl ? m_varDecl->toString() : "null");
+        if (m_initExpr) {
+            oss << " init=" << m_initExpr->toString();
+        }
+        oss << " @[" << line() << "," << column() << "])";
+        return oss.str();
+    }
+};
+
 // ============================================================================
 //  The Root of a C Translation Unit
 // ============================================================================
