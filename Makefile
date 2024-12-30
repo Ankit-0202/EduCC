@@ -1,7 +1,7 @@
-# MAKEFILE
+# Makefile for C99 Compiler Project
 
 # ===========================
-# 1. Compiler and Flags
+# Compiler and Flags
 # ===========================
 
 # Compiler
@@ -25,7 +25,7 @@ else
 endif
 
 # ===========================
-# 2. Directories
+# Directories
 # ===========================
 
 # Source Directory
@@ -41,7 +41,7 @@ BUILD_DIR := build/$(BUILD_TYPE)
 TEST_DIR := tests
 
 # ===========================
-# 3. Files
+# Files
 # ===========================
 
 # Find all .cpp source files recursively in src/
@@ -58,7 +58,7 @@ DEPS := $(OBJS:.o=.d)
 TARGET := c99compiler
 
 # ===========================
-# 4. Test Files
+# Test Files
 # ===========================
 
 # Find all test .cpp files
@@ -71,14 +71,20 @@ TEST_OBJS := $(patsubst $(TEST_DIR)/%.cpp, $(BUILD_DIR)/tests/%.o, $(TEST_SRCS))
 TEST_TARGET := run_tests
 
 # ===========================
-# 5. Default Target
+# OS Detection
+# ===========================
+
+UNAME_S := $(shell uname -s)
+
+# ===========================
+# Default Target
 # ===========================
 
 .PHONY: all
 all: $(BUILD_DIR)/$(TARGET)
 
 # ===========================
-# 6. Linking
+# Linking
 # ===========================
 
 # Link all object files to create the executable
@@ -86,7 +92,7 @@ $(BUILD_DIR)/$(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS)
 
 # ===========================
-# 7. Compilation
+# Compilation
 # ===========================
 
 # Pattern rule to compile .cpp files to .o files
@@ -96,7 +102,7 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 # ===========================
-# 8. Test Compilation and Linking
+# Test Compilation and Linking
 # ===========================
 
 # Compile test object files
@@ -106,10 +112,33 @@ $(BUILD_DIR)/tests/%.o: $(TEST_DIR)/%.cpp
 
 # Link test executable
 $(BUILD_DIR)/$(TEST_TARGET): $(TEST_OBJS) $(OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) -lgtest -lgtest_main -pthread
+	@echo "Checking for Google Test libraries..."
+	@if [ "$(UNAME_S)" = "Darwin" ]; then \
+		GTEST_LIB1="/usr/local/lib/libgtest.a"; \
+		GTEST_LIB2="/opt/homebrew/lib/libgtest.a"; \
+	else \
+		GTEST_LIB1="/usr/lib/libgtest.a"; \
+		GTEST_LIB2="/usr/local/lib/libgtest.a"; \
+	fi; \
+	if [ -f $$GTEST_LIB1 ]; then \
+		echo "Found Google Test at $$GTEST_LIB1"; \
+		GTEST_LIB=$$GTEST_LIB1; \
+	elif [ -f $$GTEST_LIB2 ]; then \
+		echo "Found Google Test at $$GTEST_LIB2"; \
+		GTEST_LIB=$$GTEST_LIB2; \
+	else \
+		echo >&2 "Google Test library not found."; \
+		if [ "$(UNAME_S)" = "Darwin" ]; then \
+			echo >&2 "Run 'brew install googletest' to install Google Test."; \
+		else \
+			echo >&2 "Please install Google Test manually."; \
+		fi; \
+		exit 1; \
+	fi
+	$(CXX) $(CXXFLAGS) -o $@ $^ $(LDFLAGS) $$GTEST_LIB -lgtest_main -pthread
 
 # ===========================
-# 9. Clean Target
+# Clean Target
 # ===========================
 
 .PHONY: clean
@@ -117,14 +146,14 @@ clean:
 	rm -rf build
 
 # ===========================
-# 10. Rebuild Target
+# Rebuild Target
 # ===========================
 
 .PHONY: rebuild
 rebuild: clean all
 
 # ===========================
-# 11. Run Executable
+# Run Executable
 # ===========================
 
 .PHONY: run
@@ -133,16 +162,16 @@ run: $(BUILD_DIR)/$(TARGET)
 	./$(BUILD_DIR)/$(TARGET)
 
 # ===========================
-# 12. Lint Target
+# Format Target
 # ===========================
 
-.PHONY: lint
-lint:
-	@echo "Running clang-tidy..."
-	@find $(SRC_DIR) $(TEST_DIR) -name '*.cpp' | xargs clang-tidy -p build/$(BUILD_TYPE)
+.PHONY: format
+format:
+	@echo "Formatting code with clang-format..."
+	@find $(SRC_DIR) $(TEST_DIR) -name '*.cpp' -o -name '*.h' | xargs clang-format -i
 
 # ===========================
-# 13. Test Target
+# Test Target
 # ===========================
 
 .PHONY: test
@@ -151,14 +180,29 @@ test: $(BUILD_DIR)/$(TEST_TARGET)
 	./$(BUILD_DIR)/$(TEST_TARGET)
 
 # ===========================
-# 14. Include Dependencies
+# Help Target
+# ===========================
+
+.PHONY: help
+help:
+	@echo "Available targets:"
+	@echo "  all        - Build the project (default)"
+	@echo "  clean      - Remove build artifacts"
+	@echo "  rebuild    - Clean and rebuild the project"
+	@echo "  run        - Run the executable"
+	@echo "  test       - Run unit tests"
+	@echo "  format     - Format code with clang-format"
+	@echo "  help       - Show this help message"
+
+# ===========================
+# 6. Include Dependencies
 # ===========================
 
 # Include the dependency files if they exist
 -include $(DEPS)
 
 # ===========================
-# 15. Phony Targets
+# Phony Targets
 # ===========================
 
-.PHONY: all clean rebuild run lint test
+.PHONY: all clean rebuild run test format help
