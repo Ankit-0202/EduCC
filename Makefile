@@ -3,6 +3,14 @@
 # Updated Makefile (with LLVM integration)
 # =========================================================
 
+##################################################
+# Make sure you have the following in your shell configuration file,
+# or you can run them locally in your terminal.
+# export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
+# export LDFLAGS="-L/opt/homebrew/opt/llvm/lib"
+# export CPPFLAGS="-I/opt/homebrew/opt/llvm/include"
+# export PKG_CONFIG_PATH="/opt/homebrew/opt/llvm/lib/pkgconfig"
+
 # --- Compiler and Tools ---
 CXX       := g++
 CXXFLAGS  := -std=c++17 -O2 -Wall -Wextra -pedantic -Wno-unused-parameter
@@ -38,7 +46,8 @@ OBJECTS := $(patsubst $(SRC_DIR)/%.cpp, $(OBJ_DIR)/%.o, $(SOURCES))
 INC_FLAGS := -I$(INCLUDE_DIR)
 
 # By default, build the compiler
-all: $(TARGET)
+all:
+	make $(TARGET)
 
 # Link step
 $(TARGET): $(OBJECTS)
