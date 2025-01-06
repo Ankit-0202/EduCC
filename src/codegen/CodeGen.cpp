@@ -1,9 +1,18 @@
 /**
  * @file CodeGen.cpp
  * @brief Implementation of the CodeGenerator class for generating LLVM IR from the AST.
+ *
+ * This file defines the logic that converts AST nodes into LLVM IR instructions
+ * via LLVM's C++ API. It supports:
+ *   - Global variable declarations (VarDeclNode)
+ *   - Local variable declarations (DeclStmtNode)
+ *   - Function definitions (FunctionDefNode)
+ *   - Compound statements, if, while, for, return, expression statements
+ *   - Basic expressions (binary, unary, calls, literals, identifiers)
  */
 
 #include "codegen/CodeGen.h"
+#include "ast/AST.h"
 
 #include "llvm/IR/Verifier.h"
 #include "llvm/Support/FileSystem.h"
@@ -11,10 +20,10 @@
 
 #include <iostream>
 
-///////////////////////////////////////////////////////////////////////////
-// Constructor / Destructor
-///////////////////////////////////////////////////////////////////////////
-
+/**
+ * @brief Constructor for CodeGenerator.
+ * @param moduleName Name of the LLVM module to create.
+ */
 CodeGenerator::CodeGenerator(const std::string &moduleName)
     : m_context(),
       m_module(std::make_unique<llvm::Module>(moduleName, m_context)),
@@ -22,43 +31,46 @@ CodeGenerator::CodeGenerator(const std::string &moduleName)
 {
 }
 
+/**
+ * @brief Destructor for CodeGenerator. Cleans up any remaining blocks.
+ */
 CodeGenerator::~CodeGenerator()
 {
-    // Optionally do cleanup if blocks remain
+    // Clean up leftover blocks if any remain
     while (!m_blocks.empty()) {
-        CodeGenBlock *topBlock = m_blocks.top();
+        CodeGenBlock *top = m_blocks.top();
         m_blocks.pop();
-        delete topBlock;
+        delete top;
     }
 }
 
-///////////////////////////////////////////////////////////////////////////
-// Public Interface
-///////////////////////////////////////////////////////////////////////////
-
+/**
+ * @brief Generates LLVM IR for the entire AST and writes it to @p outputFilename.
+ * @param root The root TranslationUnitNode of the AST.
+ * @param outputFilename The .ll file to write the IR into.
+ */
 void CodeGenerator::generateCode(TranslationUnitNode &root, const std::string &outputFilename)
 {
-    // Clear any leftover blocks
+    // Clear any existing blocks
     while (!m_blocks.empty()) {
-        CodeGenBlock *topBlock = m_blocks.top();
+        CodeGenBlock *top = m_blocks.top();
         m_blocks.pop();
-        delete topBlock;
+        delete top;
     }
 
-    // Generate code
+    // 1) Generate IR from AST
     generateTranslationUnit(root);
 
-    // Validate the generated code
+    // 2) Verify the module
     if (llvm::verifyModule(*m_module, &llvm::errs())) {
         std::cerr << "Error: module failed verification. IR might be invalid.\n";
     }
 
-    // Write to file
+    // 3) Write IR to file
     std::error_code EC;
-    // 'OF_None' instead of 'F_Text'
     llvm::raw_fd_ostream dest(outputFilename, EC, llvm::sys::fs::OF_None);
     if (EC) {
-        std::cerr << "Could not open file: " << outputFilename 
+        std::cerr << "Could not open file: " << outputFilename
                   << " Error: " << EC.message() << std::endl;
         return;
     }
@@ -68,49 +80,58 @@ void CodeGenerator::generateCode(TranslationUnitNode &root, const std::string &o
     std::cout << "LLVM IR generated and written to " << outputFilename << std::endl;
 }
 
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
 // Basic Block Stack Helpers
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
 
-CodeGenBlock *CodeGenerator::currentBlock()
+/**
+ * @brief Retrieves the top CodeGenBlock, representing the current local scope.
+ * @return Pointer to the current block, or nullptr if none exist.
+ */
+CodeGenBlock* CodeGenerator::currentBlock()
 {
     if (m_blocks.empty()) return nullptr;
     return m_blocks.top();
 }
 
+/**
+ * @brief Pushes a new block scope onto the stack, updating the IRBuilder's insertion point.
+ * @param block The LLVM BasicBlock to become the new insertion point.
+ */
 void CodeGenerator::pushBlock(llvm::BasicBlock *block)
 {
-    // Create a new CodeGenBlock on the heap
     CodeGenBlock *newBlock = new CodeGenBlock(block);
-    // Push the pointer on the stack
     m_blocks.push(newBlock);
-
-    // Point the IRBuilder at this BasicBlock
     m_builder.SetInsertPoint(block);
 }
 
+/**
+ * @brief Pops the top block from the stack, deleting it and restoring the previous insertion point.
+ */
 void CodeGenerator::popBlock()
 {
     if (m_blocks.empty()) return;
 
-    CodeGenBlock *topBlock = m_blocks.top();
+    CodeGenBlock *top = m_blocks.top();
     m_blocks.pop();
-    // Clean up the heap allocation
-    delete topBlock;
+    delete top;
 
-    // If there’s still a block left, set the IRBuilder to that block
     if (!m_blocks.empty()) {
         m_builder.SetInsertPoint(m_blocks.top()->block);
     }
 }
 
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
 // Type Conversion Helper
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
 
+/**
+ * @brief Maps a C type name (e.g. "int") to the corresponding LLVM Type*.
+ * @param typeName The textual type name from the VarDecl/FunctionDecl.
+ * @return The corresponding LLVM Type*, or i32 if the type is unrecognized.
+ */
 llvm::Type* CodeGenerator::getLLVMType(const std::string &typeName)
 {
-    // Basic mapping for demonstration. Real C has far more nuance.
     if (typeName == "int") {
         return llvm::Type::getInt32Ty(m_context);
     }
@@ -126,55 +147,72 @@ llvm::Type* CodeGenerator::getLLVMType(const std::string &typeName)
     else if (typeName == "void") {
         return llvm::Type::getVoidTy(m_context);
     }
-    // Default fallback: treat as int
+    // Default fallback: i32
     return llvm::Type::getInt32Ty(m_context);
 }
 
-///////////////////////////////////////////////////////////////////////////
-// Top-Level AST: TranslationUnit
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
+// ASTNode Generation Entry Points
+// -----------------------------------------------------------------------------
 
+/**
+ * @brief Generates code for the entire translation unit (global scope).
+ * @param unit The TranslationUnitNode containing global declarations.
+ */
 void CodeGenerator::generateTranslationUnit(TranslationUnitNode &unit)
 {
-    // For each global declaration (function def, global var, etc.), generate
     for (auto &decl : unit.declarations()) {
         generateNode(*decl);
     }
 }
 
-///////////////////////////////////////////////////////////////////////////
-// generateNode: dispatch on ASTNodeKind
-///////////////////////////////////////////////////////////////////////////
-
+/**
+ * @brief Dispatch method: calls the appropriate generateXXX function based on node.kind().
+ * @param node The AST node to generate IR for.
+ */
 void CodeGenerator::generateNode(ASTNode &node)
 {
     switch (node.kind()) {
         case ASTNodeKind::FunctionDef:
             generateFunctionDef(static_cast<FunctionDefNode&>(node));
             break;
+
         case ASTNodeKind::VarDecl:
+            // Global variable
             generateVarDecl(static_cast<VarDeclNode&>(node));
             break;
+
         case ASTNodeKind::CompoundStmt:
             generateCompoundStmt(static_cast<CompoundStmtNode&>(node));
             break;
+
         case ASTNodeKind::IfStmt:
             generateIfStmt(static_cast<IfStmtNode&>(node));
             break;
+
         case ASTNodeKind::WhileStmt:
             generateWhileStmt(static_cast<WhileStmtNode&>(node));
             break;
+
         case ASTNodeKind::ForStmt:
             generateForStmt(static_cast<ForStmtNode&>(node));
             break;
+
         case ASTNodeKind::ReturnStmt:
             generateReturnStmt(static_cast<ReturnStmtNode&>(node));
             break;
+
         case ASTNodeKind::ExprStmt:
             generateExprStmt(static_cast<ExprStmtNode&>(node));
             break;
+
+        // NEW: local variable declaration statement
+        case ASTNodeKind::DeclStmt:
+            generateDeclStmt(static_cast<DeclStmtNode&>(node));
+            break;
+
         default:
-            // Expression nodes
+            // Possibly an expression node or unhandled type
             if (node.kind() == ASTNodeKind::BinaryExpr ||
                 node.kind() == ASTNodeKind::UnaryExpr ||
                 node.kind() == ASTNodeKind::CallExpr ||
@@ -184,56 +222,97 @@ void CodeGenerator::generateNode(ASTNode &node)
                 generateExpr(static_cast<ExprNode&>(node));
             }
             else {
-                // Possibly a FunctionDecl, etc.
+                // e.g. FunctionDecl or unknown node
+                // We can safely ignore or handle error
             }
     }
 }
 
-///////////////////////////////////////////////////////////////////////////
-// Global Variables (VarDecl)
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
+// Global Variables
+// -----------------------------------------------------------------------------
 
+/**
+ * @brief Generates a global variable declaration (VarDeclNode).
+ * @note The parser emits VarDeclNode for global vars.
+ * @param node The VarDeclNode to generate code for.
+ */
 void CodeGenerator::generateVarDecl(VarDeclNode &node)
 {
-    // We'll treat a global VarDecl as a global variable with default init = 0.
-    // For local variables, we do that in generateCompoundStmt or function body logic.
     llvm::Type *varType = getLLVMType(node.typeName());
-    // Create a global variable in the module
     auto *gvar = new llvm::GlobalVariable(
         *m_module,
         varType,
-        false,                             // isConstant?
+        /*isConstant=*/ false,
         llvm::GlobalValue::ExternalLinkage,
-        nullptr,                           // initializer
+        /*init=*/ nullptr,
         node.varName()
     );
-    // Default initializer -> 0 for now
+    // Initialize to 0 for now
     llvm::Constant *initVal = llvm::Constant::getNullValue(varType);
     gvar->setInitializer(initVal);
 }
 
-///////////////////////////////////////////////////////////////////////////
-// Function Definitions
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
+// NEW: Local Var Declaration Stmt
+// -----------------------------------------------------------------------------
 
+/**
+ * @brief Generates code for a local var declaration statement (DeclStmtNode).
+ *        Allocates stack space (alloca) and optionally initializes it.
+ * @param node The DeclStmtNode with a VarDeclNode + optional initializer.
+ */
+void CodeGenerator::generateDeclStmt(DeclStmtNode &node)
+{
+    // 1) Create an alloca for the variable in the current function
+    llvm::Type *varType = getLLVMType(node.varDecl()->typeName());
+    llvm::AllocaInst *allocaInst = m_builder.CreateAlloca(
+        varType, nullptr, node.varDecl()->varName()
+    );
+
+    // 2) Store the alloca in the current scope's locals
+    if (currentBlock()) {
+        currentBlock()->locals[node.varDecl()->varName()] = allocaInst;
+    }
+
+    // 3) If there's an initializer, generate code for it and store the result
+    if (node.initExpr()) {
+        auto initExpr = dynamic_cast<ExprNode*>(
+            const_cast<ASTNode*>(node.initExpr())
+        );
+        if (initExpr) {
+            llvm::Value *initVal = generateExpr(*initExpr);
+            if (initVal) {
+                m_builder.CreateStore(initVal, allocaInst);
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Function Definitions
+// -----------------------------------------------------------------------------
+
+/**
+ * @brief Generates code for a function definition (FunctionDefNode).
+ *        Creates a function in the LLVM module, sets up parameters,
+ *        and generates code for the function body.
+ * @param node The FunctionDefNode describing the function.
+ */
 void CodeGenerator::generateFunctionDef(FunctionDefNode &node)
 {
-    // 1) Retrieve function declaration info
+    // Retrieve the function declaration info
     const auto *decl = node.decl();
     if (!decl) return; // or handle error
 
     llvm::Type *retType = getLLVMType(decl->returnType());
-
-    // Build the function's parameter type list
     std::vector<llvm::Type*> paramTypes;
+
     for (size_t i = 0; i < decl->paramCount(); i++) {
         paramTypes.push_back(getLLVMType(decl->paramType(i)));
     }
 
-    // Create function type
-    auto *funcType = llvm::FunctionType::get(retType, paramTypes, false);
-
-    // Create the function in the module
+    auto *funcType = llvm::FunctionType::get(retType, paramTypes, /*isVarArg=*/false);
     llvm::Function *function = llvm::Function::Create(
         funcType,
         llvm::GlobalValue::ExternalLinkage,
@@ -241,41 +320,39 @@ void CodeGenerator::generateFunctionDef(FunctionDefNode &node)
         m_module.get()
     );
 
-    // Name the function parameters
+    // Name parameters
     unsigned idx = 0;
     for (auto &arg : function->args()) {
         arg.setName(decl->paramName(idx));
         idx++;
     }
 
-    // 2) Create a basic block to start insertion
+    // Create an entry block in the function
     auto *entryBlock = llvm::BasicBlock::Create(m_context, "entry", function);
     pushBlock(entryBlock);
 
-    // 3) For each parameter, create an alloca and store the param
+    // For each parameter, create an alloca and store the param
     idx = 0;
     for (auto &arg : function->args()) {
         llvm::AllocaInst *alloca = m_builder.CreateAlloca(arg.getType(), nullptr, arg.getName());
-        // store the function argument into the local variable
         m_builder.CreateStore(&arg, alloca);
-        // add to locals map
+
+        // Add to locals map
         currentBlock()->locals[arg.getName().str()] = alloca;
         idx++;
     }
 
-    // 4) Generate the body
+    // Generate the body
     if (node.body()) {
         generateNode(*(ASTNode*)node.body());
     }
 
-    // If the function does not end in a return, and return type is void, insert `ret void`
+    // If no return was generated, insert a default ret
     if (retType->isVoidTy()) {
         if (!entryBlock->getTerminator()) {
             m_builder.CreateRetVoid();
         }
-    }
-    else {
-        // If the function is non-void but missing a return, let's return 0
+    } else {
         if (!entryBlock->getTerminator()) {
             auto *defaultVal = llvm::ConstantInt::get(retType, 0);
             m_builder.CreateRet(defaultVal);
@@ -285,20 +362,25 @@ void CodeGenerator::generateFunctionDef(FunctionDefNode &node)
     popBlock();
 }
 
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
 // Compound Statement
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
 
+/**
+ * @brief Generates code for a compound statement (block). Creates a new
+ *        logical scope, but reuses the same BasicBlock unless you need
+ *        separate jump targets.
+ * @param node The CompoundStmtNode.
+ */
 void CodeGenerator::generateCompoundStmt(CompoundStmtNode &node)
 {
-    // Create a new block scope (but keep in same function).
     llvm::BasicBlock *currentBB = m_builder.GetInsertBlock();
-    pushBlock(currentBB); // reuse the same BB, but new CodeGenBlock for local variables
+    // push a block scope with the same BB
+    pushBlock(currentBB);
 
-    // Generate each statement inside
     for (auto &item : node.items()) {
         generateNode(*item);
-        // If we already inserted a terminator (like return), we can stop
+        // If a terminator (e.g. return) was inserted, we can break early
         if (currentBB->getTerminator()) {
             break;
         }
@@ -307,23 +389,20 @@ void CodeGenerator::generateCompoundStmt(CompoundStmtNode &node)
     popBlock();
 }
 
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
 // If Statement
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
 
 void CodeGenerator::generateIfStmt(IfStmtNode &node)
 {
-    // generate condition
+    // Evaluate condition -> i1
     llvm::Value *condVal = nullptr;
     if (node.condition()) {
         condVal = generateExpr(*(ExprNode*)node.condition());
     }
     if (!condVal) {
-        // fallback: always false
         condVal = llvm::ConstantInt::get(llvm::Type::getInt1Ty(m_context), 0);
     }
-
-    // Convert i32 -> i1 if needed
     if (condVal->getType()->isIntegerTy(32)) {
         condVal = m_builder.CreateICmpNE(
             condVal,
@@ -333,7 +412,6 @@ void CodeGenerator::generateIfStmt(IfStmtNode &node)
     }
 
     llvm::Function *function = m_builder.GetInsertBlock()->getParent();
-
     llvm::BasicBlock *thenBB  = llvm::BasicBlock::Create(m_context, "then", function);
     llvm::BasicBlock *elseBB  = llvm::BasicBlock::Create(m_context, "else", function);
     llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create(m_context, "ifend", function);
@@ -343,13 +421,11 @@ void CodeGenerator::generateIfStmt(IfStmtNode &node)
     // then block
     m_builder.SetInsertPoint(thenBB);
     pushBlock(thenBB);
-
     if (node.thenBranch()) {
         generateNode(*(ASTNode*)node.thenBranch());
     }
     bool hasThenTerm = (thenBB->getTerminator() != nullptr);
     popBlock();
-
     if (!hasThenTerm) {
         m_builder.CreateBr(mergeBB);
     }
@@ -357,13 +433,11 @@ void CodeGenerator::generateIfStmt(IfStmtNode &node)
     // else block
     m_builder.SetInsertPoint(elseBB);
     pushBlock(elseBB);
-
     if (node.elseBranch()) {
         generateNode(*(ASTNode*)node.elseBranch());
     }
     bool hasElseTerm = (elseBB->getTerminator() != nullptr);
     popBlock();
-
     if (!hasElseTerm) {
         m_builder.CreateBr(mergeBB);
     }
@@ -372,9 +446,9 @@ void CodeGenerator::generateIfStmt(IfStmtNode &node)
     m_builder.SetInsertPoint(mergeBB);
 }
 
-///////////////////////////////////////////////////////////////////////////
-// WhileStmt
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
+// While Statement
+// -----------------------------------------------------------------------------
 
 void CodeGenerator::generateWhileStmt(WhileStmtNode &node)
 {
@@ -384,7 +458,6 @@ void CodeGenerator::generateWhileStmt(WhileStmtNode &node)
     llvm::BasicBlock *loopBB = llvm::BasicBlock::Create(m_context, "whileloop", function);
     llvm::BasicBlock *exitBB = llvm::BasicBlock::Create(m_context, "whileexit", function);
 
-    // jump to cond
     m_builder.CreateBr(condBB);
 
     // cond
@@ -398,10 +471,12 @@ void CodeGenerator::generateWhileStmt(WhileStmtNode &node)
     if (!condVal) {
         condVal = llvm::ConstantInt::get(llvm::Type::getInt1Ty(m_context), 1);
     }
-
     if (condVal->getType()->isIntegerTy(32)) {
-        condVal = m_builder.CreateICmpNE(condVal,
-            llvm::ConstantInt::get(condVal->getType(), 0), "whilecond");
+        condVal = m_builder.CreateICmpNE(
+            condVal,
+            llvm::ConstantInt::get(condVal->getType(), 0),
+            "whilecond"
+        );
     }
     m_builder.CreateCondBr(condVal, loopBB, exitBB);
     popBlock();
@@ -409,7 +484,6 @@ void CodeGenerator::generateWhileStmt(WhileStmtNode &node)
     // loop
     m_builder.SetInsertPoint(loopBB);
     pushBlock(loopBB);
-
     if (node.body()) {
         generateNode(*(ASTNode*)node.body());
     }
@@ -422,22 +496,20 @@ void CodeGenerator::generateWhileStmt(WhileStmtNode &node)
     m_builder.SetInsertPoint(exitBB);
 }
 
-///////////////////////////////////////////////////////////////////////////
-// ForStmt
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
+// For Statement
+// -----------------------------------------------------------------------------
 
 void CodeGenerator::generateForStmt(ForStmtNode &node)
 {
     llvm::Function *function = m_builder.GetInsertBlock()->getParent();
 
-    // We'll create blocks: forinit, forcond, forloop, forincr, forexit
     llvm::BasicBlock *initBB = llvm::BasicBlock::Create(m_context, "forinit", function);
     llvm::BasicBlock *condBB = llvm::BasicBlock::Create(m_context, "forcond", function);
     llvm::BasicBlock *loopBB = llvm::BasicBlock::Create(m_context, "forloop", function);
     llvm::BasicBlock *incrBB = llvm::BasicBlock::Create(m_context, "forincr", function);
     llvm::BasicBlock *exitBB = llvm::BasicBlock::Create(m_context, "forexit", function);
 
-    // jump to init
     m_builder.CreateBr(initBB);
 
     // init
@@ -464,7 +536,10 @@ void CodeGenerator::generateForStmt(ForStmtNode &node)
     }
     if (condVal->getType()->isIntegerTy(32)) {
         condVal = m_builder.CreateICmpNE(
-            condVal, llvm::ConstantInt::get(condVal->getType(), 0), "forcond");
+            condVal,
+            llvm::ConstantInt::get(condVal->getType(), 0),
+            "forcond"
+        );
     }
     m_builder.CreateCondBr(condVal, loopBB, exitBB);
     popBlock();
@@ -495,9 +570,9 @@ void CodeGenerator::generateForStmt(ForStmtNode &node)
     m_builder.SetInsertPoint(exitBB);
 }
 
-///////////////////////////////////////////////////////////////////////////
-// ReturnStmt
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
+// Return Statement
+// -----------------------------------------------------------------------------
 
 void CodeGenerator::generateReturnStmt(ReturnStmtNode &node)
 {
@@ -506,28 +581,28 @@ void CodeGenerator::generateReturnStmt(ReturnStmtNode &node)
         retVal = generateExpr(*(ExprNode*)node.expr());
     }
     if (!retVal) {
-        // If function is void, then CreateRetVoid
+        // For a void function, do "ret void"
         m_builder.CreateRetVoid();
     } else {
         m_builder.CreateRet(retVal);
     }
 }
 
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
 // Expression Statement
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
 
 void CodeGenerator::generateExprStmt(ExprStmtNode &node)
 {
     if (node.expr()) {
         generateExpr(*(ExprNode*)node.expr());
     }
-    // discard result
+    // Discard result
 }
 
-///////////////////////////////////////////////////////////////////////////
-// Expression Codegen
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
+// Expression Generation
+// -----------------------------------------------------------------------------
 
 llvm::Value* CodeGenerator::generateExpr(ExprNode &expr)
 {
@@ -543,10 +618,14 @@ llvm::Value* CodeGenerator::generateExpr(ExprNode &expr)
         case ASTNodeKind::IdentifierExpr:
             return generateIdentifierExpr(static_cast<IdentifierExprNode&>(expr));
         default:
-            // unexpected
+            // unexpected expression type
             return nullptr;
     }
 }
+
+// -----------------------------------------------------------------------------
+// Binary Expression
+// -----------------------------------------------------------------------------
 
 llvm::Value* CodeGenerator::generateBinaryExpr(BinaryExprNode &expr)
 {
@@ -556,22 +635,22 @@ llvm::Value* CodeGenerator::generateBinaryExpr(BinaryExprNode &expr)
 
     std::string op = expr.op();
 
-    // If we see "=", treat left as an lvalue (identifier?), store right into it.
+    // assignment "a = b"
     if (op == "=") {
-        // L must be an identifier or something that can be assigned to
-        // For simplicity, we assume L is an identifier expression.
-        
         auto *identifierLeft = dynamic_cast<IdentifierExprNode*>(
             const_cast<ASTNode*>(expr.left())
         );
-        if (!identifierLeft) return nullptr;
+        if (!identifierLeft) {
+            // not a plain identifier => not handled in this example
+            return nullptr;
+        }
+        // store R into the variable named by left
         setVariableValue(identifierLeft->name(), R);
         return R;
     }
 
-    // assume i32 arithmetic
+    // i32 arithmetic
     if (L->getType()->isIntegerTy() && R->getType()->isIntegerTy()) {
-        // Otherwise, we skip float handling for brevity. Expand as needed.    
         if (op == "+")  return m_builder.CreateAdd(L, R, "addtmp");
         if (op == "-")  return m_builder.CreateSub(L, R, "subtmp");
         if (op == "*")  return m_builder.CreateMul(L, R, "multmp");
@@ -584,8 +663,13 @@ llvm::Value* CodeGenerator::generateBinaryExpr(BinaryExprNode &expr)
         if (op == "<=") return m_builder.CreateICmpSLE(L, R, "letmp");
         if (op == ">=") return m_builder.CreateICmpSGE(L, R, "getmp");
     }
+    // If float/double, you'd do CreateFAdd, etc. Not shown.
     return nullptr;
 }
+
+// -----------------------------------------------------------------------------
+// Unary Expression
+// -----------------------------------------------------------------------------
 
 llvm::Value* CodeGenerator::generateUnaryExpr(UnaryExprNode &expr)
 {
@@ -594,25 +678,22 @@ llvm::Value* CodeGenerator::generateUnaryExpr(UnaryExprNode &expr)
 
     std::string op = expr.op();
     if (op == "-") {
-        // numeric negation
         if (operand->getType()->isIntegerTy()) {
             return m_builder.CreateNeg(operand, "negtmp");
         }
-        // skip float, etc. for brevity
+        // float/double => CreateFNeg
     }
     else if (op == "+") {
-        // unary plus is a no-op
+        // unary plus => no-op
         return operand;
     }
     else if (op == "++" || op == "--") {
-        // pre-increment or pre-decrement
-        // we assume operand is an identifier
+        // pre-increment/decrement
         auto *identifier = dynamic_cast<IdentifierExprNode*>(
-            const_cast<ASTNode*>(expr.operand()) // remove const
+            const_cast<ASTNode*>(expr.operand())
         );
         if (!identifier) return nullptr;
 
-        // load current
         llvm::Value *val = getVariableValue(identifier->name());
         if (!val) return nullptr;
 
@@ -623,62 +704,71 @@ llvm::Value* CodeGenerator::generateUnaryExpr(UnaryExprNode &expr)
         setVariableValue(identifier->name(), res);
         return res;
     }
-
     return nullptr;
 }
 
+// -----------------------------------------------------------------------------
+// Function Call Expression
+// -----------------------------------------------------------------------------
+
 llvm::Value* CodeGenerator::generateCallExpr(CallExprNode &expr)
 {
-    // Look up the function in the module
     llvm::Function *calleeF = m_module->getFunction(expr.callee());
     if (!calleeF) {
-        // function not found, IR will be broken unless we want to declare it external
+        // function not found => error unless declared external
         return nullptr;
     }
 
-    // generate arguments
     std::vector<llvm::Value*> argsV;
     for (auto &arg : expr.args()) {
-        llvm::Value *argVal = generateExpr(*(ExprNode*)arg.get());
-        if (!argVal) return nullptr;
-        argsV.push_back(argVal);
+        auto val = generateExpr(*(ExprNode*)arg.get());
+        if (!val) return nullptr;
+        argsV.push_back(val);
     }
 
     return m_builder.CreateCall(calleeF, argsV, "calltmp");
 }
 
+// -----------------------------------------------------------------------------
+// Literal Expression
+// -----------------------------------------------------------------------------
+
 llvm::Value* CodeGenerator::generateLiteralExpr(LiteralExprNode &expr)
 {
-    // parse the string to decide if it's int, float, etc.
-    // For demonstration, let's assume everything that looks integer is i32:
     const std::string &valStr = expr.value();
-
-    // If it has '.' => treat as float (very naive check):
+    // naive parse
     if (valStr.find('.') != std::string::npos) {
         // float parse
         float fVal = std::stof(valStr);
         return llvm::ConstantFP::get(llvm::Type::getFloatTy(m_context), fVal);
-    }
-    else {
+    } else {
         // integer parse
         int iVal = std::stoi(valStr);
         return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m_context), iVal);
     }
 }
 
+// -----------------------------------------------------------------------------
+// Identifier Expression
+// -----------------------------------------------------------------------------
+
 llvm::Value* CodeGenerator::generateIdentifierExpr(IdentifierExprNode &expr)
 {
-    // load the variable from local alloca
     return getVariableValue(expr.name());
 }
 
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
 // Variable Load/Store Helpers
-///////////////////////////////////////////////////////////////////////////
+// -----------------------------------------------------------------------------
 
+/**
+ * @brief Retrieves the current value of the variable named @p name,
+ *        searching local scopes outward, or a global variable if no local found.
+ * @param name The variable name.
+ * @return The loaded llvm::Value*, or nullptr if not found.
+ */
 llvm::Value* CodeGenerator::getVariableValue(const std::string &name)
 {
-    // copy the stack of CodeGenBlock* so we can search it
     std::stack<CodeGenBlock*> tmpStack = m_blocks;
     while (!tmpStack.empty()) {
         CodeGenBlock *blk = tmpStack.top();
@@ -686,19 +776,25 @@ llvm::Value* CodeGenerator::getVariableValue(const std::string &name)
 
         auto it = blk->locals.find(name);
         if (it != blk->locals.end()) {
-            // load from alloca
-            return m_builder.CreateLoad(it->second->getAllocatedType(), it->second, name.c_str());
+            // load from the alloca
+            return m_builder.CreateLoad(it->second->getAllocatedType(),
+                                        it->second,
+                                        name.c_str());
         }
     }
 
-    // else check global
+    // check if it's a global
     if (auto *gvar = m_module->getGlobalVariable(name)) {
         return m_builder.CreateLoad(gvar->getValueType(), gvar, name.c_str());
     }
-    // not found
     return nullptr;
 }
 
+/**
+ * @brief Assigns @p value to the variable named @p name, searching local scopes or global.
+ * @param name The variable name.
+ * @param value The llvm::Value* to store.
+ */
 void CodeGenerator::setVariableValue(const std::string &name, llvm::Value* value)
 {
     std::stack<CodeGenBlock*> tmpStack = m_blocks;
@@ -713,10 +809,10 @@ void CodeGenerator::setVariableValue(const std::string &name, llvm::Value* value
         }
     }
 
-    // check global
+    // If it's global, store directly
     if (auto *gvar = m_module->getGlobalVariable(name)) {
         m_builder.CreateStore(value, gvar);
         return;
     }
-    // not found -> do nothing or error
+    // not found => no-op or error
 }

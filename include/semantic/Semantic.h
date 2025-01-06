@@ -11,6 +11,9 @@
 #include "semantic/SymbolTable.h"
 #include <memory>
 
+// Forward declarations if needed
+class SymbolTable;
+
 /**
  * @class SemanticAnalyzer
  * @brief Performs semantic analysis on the AST:
@@ -22,44 +25,53 @@ class SemanticAnalyzer
 {
 public:
     /**
-     * @brief Constructs the analyzer with a reference to the AST's root node.
-     * @param root The top-level AST node (TranslationUnit).
+     * @brief Constructs a SemanticAnalyzer with a root TranslationUnitNode.
+     * @param root The root translation unit node.
      */
     SemanticAnalyzer(TranslationUnitNode &root);
 
     /**
-     * @brief Runs the semantic analysis, throwing std::runtime_error on errors.
+     * @brief Main entry point for semantic checks.
      */
     void analyze();
 
 private:
     TranslationUnitNode &m_root;
 
-    // Helper methods:
-    void analyzeTranslationUnit(TranslationUnitNode &unit, std::shared_ptr<SymbolTable> symTable);
+    void semanticError(ASTNode &node, const std::string &msg);
+    void analyzeTranslationUnit(TranslationUnitNode &unit,
+                                std::shared_ptr<SymbolTable> symTable);
+
     void analyzeNode(ASTNode &node, std::shared_ptr<SymbolTable> symTable);
 
-    // Overloads for different node types:
+    // Declarations
     void analyzeVarDecl(VarDeclNode &node, std::shared_ptr<SymbolTable> symTable);
     void analyzeFunctionDecl(FunctionDeclNode &node, std::shared_ptr<SymbolTable> symTable);
     void analyzeFunctionDef(FunctionDefNode &node, std::shared_ptr<SymbolTable> symTable);
-    void analyzeCompoundStmt(CompoundStmtNode &node, std::shared_ptr<SymbolTable> symTable);
-    void analyzeIfStmt(IfStmtNode &node, std::shared_ptr<SymbolTable> symTable);
-    void analyzeWhileStmt(WhileStmtNode &node, std::shared_ptr<SymbolTable> symTable);
-    void analyzeForStmt(ForStmtNode &node, std::shared_ptr<SymbolTable> symTable);
-    void analyzeReturnStmt(ReturnStmtNode &node, std::shared_ptr<SymbolTable> symTable);
-    void analyzeExprStmt(ExprStmtNode &node, std::shared_ptr<SymbolTable> symTable);
 
-    // Expression analysis
+    void analyzeDeclStmt(DeclStmtNode &node, std::shared_ptr<SymbolTable> symTable); 
+
+    // Statements
+    void analyzeCompoundStmt(CompoundStmtNode &node,
+                             std::shared_ptr<SymbolTable> symTable);
+    void analyzeIfStmt(IfStmtNode &node,
+                       std::shared_ptr<SymbolTable> symTable);
+    void analyzeWhileStmt(WhileStmtNode &node,
+                          std::shared_ptr<SymbolTable> symTable);
+    void analyzeForStmt(ForStmtNode &node,
+                        std::shared_ptr<SymbolTable> symTable);
+    void analyzeReturnStmt(ReturnStmtNode &node,
+                           std::shared_ptr<SymbolTable> symTable);
+    void analyzeExprStmt(ExprStmtNode &node,
+                         std::shared_ptr<SymbolTable> symTable);
+
+    // Expressions
     void analyzeExpr(ExprNode &expr, std::shared_ptr<SymbolTable> symTable);
     void analyzeBinaryExpr(BinaryExprNode &expr, std::shared_ptr<SymbolTable> symTable);
     void analyzeUnaryExpr(UnaryExprNode &expr, std::shared_ptr<SymbolTable> symTable);
     void analyzeCallExpr(CallExprNode &expr, std::shared_ptr<SymbolTable> symTable);
     void analyzeLiteralExpr(LiteralExprNode &expr, std::shared_ptr<SymbolTable> symTable);
     void analyzeIdentifierExpr(IdentifierExprNode &expr, std::shared_ptr<SymbolTable> symTable);
-
-    // Helpers:
-    [[noreturn]] void semanticError(ASTNode &node, const std::string &msg);
 };
 
 #endif // EDUCC_SEMANTIC_H

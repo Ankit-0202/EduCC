@@ -1,34 +1,20 @@
-/**
- * @file CodeGen.h
- * @brief Declaration of the CodeGenerator class for generating LLVM IR.
- */
-
-#ifndef EDUCC_CODEGEN_H
-#define EDUCC_CODEGEN_H
+#ifndef CODEGEN_H
+#define CODEGEN_H
 
 #include "EduCC.h"
-#include "ast/AST.h"
-#include "semantic/SymbolTable.h"
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/Module.h>
 
-// LLVM headers:
-#include "llvm/IR/LLVMContext.h"
-#include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/Module.h"
-#include "llvm/IR/Value.h"
-
-#include <memory>
+#include "ast/AST.h"      // so we can see DeclStmtNode, etc.
 #include <string>
 #include <unordered_map>
 #include <stack>
 
 /**
- * @class CodeGenBlock
- * @brief Represents a scope/block during codegen. Tracks local variables, etc.
+ * @brief A small helper struct for codegen block scopes.
  */
-class CodeGenBlock
+struct CodeGenBlock
 {
-public:
-    // An LLVM BasicBlock*
     llvm::BasicBlock *block;
     // A map from variable name -> alloca instruction
     std::unordered_map<std::string, llvm::AllocaInst*> locals;
@@ -37,18 +23,10 @@ public:
         : block(bb) {}
 };
 
-/**
- * @class CodeGenerator
- * @brief Responsible for converting the AST into LLVM IR.
- *
- * Usage:
- *   1) Construct CodeGenerator with a module name.
- *   2) call generateCode(ASTNode&, outputFilename).
- *   3) The IR is emitted to 'outputFilename' in textual form (.ll).
- */
 class CodeGenerator
 {
 public:
+    // Constructor / Destructor
     CodeGenerator(const std::string &moduleName);
     ~CodeGenerator();
 
@@ -61,27 +39,27 @@ public:
     void generateCode(TranslationUnitNode &root, const std::string &outputFilename);
 
 private:
-    // The core LLVM machinery
+    // BasicBlock stack
+    std::stack<CodeGenBlock*> m_blocks;
     llvm::LLVMContext m_context;
     std::unique_ptr<llvm::Module> m_module;
     llvm::IRBuilder<> m_builder;
 
-    // A stack of CodeGenBlock scopes
-    std::stack<CodeGenBlock*> m_blocks;
-
-    // Helpers to manage the current block
-    CodeGenBlock *currentBlock();
-    void pushBlock(llvm::BasicBlock *block);
-    void popBlock();
-
-    // Utility: get an LLVM type from a string (e.g., "int" -> i32).
-    llvm::Type* getLLVMType(const std::string &typeName);
-
-    // AST visitors / codegen methods:
+    // AST Generation
     void generateTranslationUnit(TranslationUnitNode &unit);
     void generateNode(ASTNode &node);
-    void generateFunctionDef(FunctionDefNode &node);
+
+    // Declaration code
     void generateVarDecl(VarDeclNode &node);
+
+    /**
+     * @brief Generates code for a local variable declaration statement (DeclStmtNode).
+     *        Allocates stack memory (alloca) and optionally initializes it.
+     */
+    void generateDeclStmt(DeclStmtNode &node);  //<--- ADD THIS LINE
+
+    // Statement code
+    void generateFunctionDef(FunctionDefNode &node);
     void generateCompoundStmt(CompoundStmtNode &node);
     void generateIfStmt(IfStmtNode &node);
     void generateWhileStmt(WhileStmtNode &node);
@@ -89,7 +67,7 @@ private:
     void generateReturnStmt(ReturnStmtNode &node);
     void generateExprStmt(ExprStmtNode &node);
 
-    // Expression codegen -> returns llvm::Value*
+    // Expression code
     llvm::Value* generateExpr(ExprNode &expr);
     llvm::Value* generateBinaryExpr(BinaryExprNode &expr);
     llvm::Value* generateUnaryExpr(UnaryExprNode &expr);
@@ -97,9 +75,16 @@ private:
     llvm::Value* generateLiteralExpr(LiteralExprNode &expr);
     llvm::Value* generateIdentifierExpr(IdentifierExprNode &expr);
 
-    // Helpers for variable load/store
+    // Helpers
+    llvm::Type* getLLVMType(const std::string &typeName);
+
+    CodeGenBlock* currentBlock();
+    void pushBlock(llvm::BasicBlock *block);
+    void popBlock();
+
+    // Load/Store
     llvm::Value* getVariableValue(const std::string &name);
     void setVariableValue(const std::string &name, llvm::Value* value);
 };
 
-#endif // EDUCC_CODEGEN_H
+#endif // CODEGEN_H

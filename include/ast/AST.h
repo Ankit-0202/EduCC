@@ -15,6 +15,7 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <sstream>
 
 /**
  * @enum ASTNodeKind
@@ -22,23 +23,29 @@
  */
 enum class ASTNodeKind
 {
-    TranslationUnit,  // The root for the entire file
+    // Root
+    TranslationUnit,
+
+    // Declarations
+    VarDecl,
     FunctionDecl,
     FunctionDef,
-    VarDecl,
+
+    // Statements
     CompoundStmt,
     IfStmt,
     WhileStmt,
     ForStmt,
     ReturnStmt,
     ExprStmt,
+    DeclStmt, // for local variable declarations
+
     // Expressions
     BinaryExpr,
     UnaryExpr,
     CallExpr,
     LiteralExpr,
     IdentifierExpr,
-    // ... you can add more as needed
 };
 
 /**
@@ -59,47 +66,63 @@ public:
     virtual ~ASTNode() = default;
 
     ASTNodeKind kind() const { return m_kind; }
-    size_t line() const { return m_line; }
-    size_t column() const { return m_column; }
+    size_t line() const      { return m_line; }
+    size_t column() const    { return m_column; }
 
     /**
-     * @brief Utility for debugging: returns a string describing this node.
+     * @brief Returns a string describing this node, for debugging.
      */
     virtual std::string toString() const = 0;
 };
 
-// ============================================================================
-//  Declarations
-// ============================================================================
+// ========== TranslationUnitNode ==========
 
-/**
- * @class DeclNode
- * @brief Base class for declarations (e.g., variables, functions).
- */
-class DeclNode : public ASTNode
-{
-public:
-    DeclNode(ASTNodeKind kind, size_t line, size_t column)
-        : ASTNode(kind, line, column)
-    {}
-
-    ~DeclNode() override = default;
-};
-
-/**
- * @class VarDeclNode
- * @brief Represents a variable declaration at the global or local scope.
- */
-class VarDeclNode : public DeclNode
+class TranslationUnitNode : public ASTNode
 {
 private:
-    std::string m_type;   ///< e.g., "int", "float", "char"
-    std::string m_name;   ///< variable name
+    std::vector<std::unique_ptr<ASTNode>> m_decls;
 
 public:
-    VarDeclNode(const std::string &type, const std::string &name,
+    TranslationUnitNode(size_t line, size_t column)
+        : ASTNode(ASTNodeKind::TranslationUnit, line, column)
+    {}
+
+    void addDeclaration(std::unique_ptr<ASTNode> decl)
+    {
+        m_decls.push_back(std::move(decl));
+    }
+
+    const std::vector<std::unique_ptr<ASTNode>> &declarations() const
+    {
+        return m_decls;
+    }
+
+    std::string toString() const override
+    {
+        std::ostringstream oss;
+        oss << "(TranslationUnit [";
+        for (size_t i = 0; i < m_decls.size(); i++) {
+            if (i > 0) oss << ", ";
+            oss << (m_decls[i] ? m_decls[i]->toString() : "null");
+        }
+        oss << "] @[" << line() << "," << column() << "])";
+        return oss.str();
+    }
+};
+
+// ========== VarDeclNode ==========
+
+class VarDeclNode : public ASTNode
+{
+private:
+    std::string m_type;
+    std::string m_name;
+
+public:
+    VarDeclNode(const std::string &type,
+                const std::string &name,
                 size_t line, size_t column)
-        : DeclNode(ASTNodeKind::VarDecl, line, column),
+        : ASTNode(ASTNodeKind::VarDecl, line, column),
           m_type(type), m_name(name)
     {}
 
@@ -115,11 +138,57 @@ public:
     }
 };
 
-/**
- * @class FunctionDeclNode
- * @brief Represents a function declaration/prototype (without a body).
- */
-class FunctionDeclNode : public DeclNode
+// ========== StmtNode ==========
+
+class StmtNode : public ASTNode
+{
+public:
+    StmtNode(ASTNodeKind kind, size_t line, size_t column)
+        : ASTNode(kind, line, column)
+    {}
+    ~StmtNode() override = default;
+};
+
+// ========== DeclStmtNode (Local Var Declaration) ==========
+
+class DeclStmtNode : public StmtNode
+{
+private:
+    std::unique_ptr<VarDeclNode> m_varDecl;
+    std::unique_ptr<ASTNode>     m_initExpr;
+
+public:
+    DeclStmtNode(std::unique_ptr<VarDeclNode> varDecl,
+                 std::unique_ptr<ASTNode> initExpr,
+                 size_t line, size_t column)
+        : StmtNode(ASTNodeKind::DeclStmt, line, column),
+          m_varDecl(std::move(varDecl)),
+          m_initExpr(std::move(initExpr))
+    {}
+
+    const VarDeclNode* varDecl() const { return m_varDecl.get(); }
+    const ASTNode* initExpr() const    { return m_initExpr.get(); }
+
+    std::string toString() const override
+    {
+        std::ostringstream oss;
+        oss << "(DeclStmt var=";
+        if (m_varDecl) {
+            oss << m_varDecl->toString();
+        } else {
+            oss << "null";
+        }
+        if (m_initExpr) {
+            oss << " init=" << m_initExpr->toString();
+        }
+        oss << " @[" << line() << "," << column() << "])";
+        return oss.str();
+    }
+};
+
+// ========== FunctionDeclNode ==========
+
+class FunctionDeclNode : public ASTNode
 {
 private:
     std::string m_returnType;
@@ -133,9 +202,11 @@ public:
                      const std::vector<std::string> &paramTypes,
                      const std::vector<std::string> &paramNames,
                      size_t line, size_t column)
-        : DeclNode(ASTNodeKind::FunctionDecl, line, column),
-          m_returnType(retType), m_name(name),
-          m_paramTypes(paramTypes), m_paramNames(paramNames)
+        : ASTNode(ASTNodeKind::FunctionDecl, line, column),
+          m_returnType(retType),
+          m_name(name),
+          m_paramTypes(paramTypes),
+          m_paramNames(paramNames)
     {}
 
     const std::string &returnType() const { return m_returnType; }
@@ -158,59 +229,39 @@ public:
     }
 };
 
-/**
- * @class FunctionDefNode
- * @brief Represents a full function definition (declaration + body).
- */
-class FunctionDefNode : public DeclNode
+// ========== FunctionDefNode : public ASTNode ==========
+
+class FunctionDefNode : public ASTNode
 {
 private:
-    std::unique_ptr<FunctionDeclNode> m_decl;  ///< The function declaration part
-    // Body is a statement block (compound statement)
-    // We'll define a CompoundStmtNode later.
+    std::unique_ptr<FunctionDeclNode> m_decl;
     std::unique_ptr<ASTNode> m_body;
 
 public:
     FunctionDefNode(std::unique_ptr<FunctionDeclNode> decl,
                     std::unique_ptr<ASTNode> body,
                     size_t line, size_t column)
-        : DeclNode(ASTNodeKind::FunctionDef, line, column),
-          m_decl(std::move(decl)), m_body(std::move(body))
+        : ASTNode(ASTNodeKind::FunctionDef, line, column),
+          m_decl(std::move(decl)),
+          m_body(std::move(body))
     {}
 
     const FunctionDeclNode* decl() const { return m_decl.get(); }
-    const ASTNode* body() const { return m_body.get(); }
+    const ASTNode* body() const          { return m_body.get(); }
 
     std::string toString() const override
     {
         std::ostringstream oss;
-        oss << "(FuncDef " << m_decl->funcName()
-            << " @[" << line() << "," << column() << "])";
+        oss << "(FuncDef ";
+        if (m_decl) oss << m_decl->funcName();
+        else oss << "null";
+        oss << " @[" << line() << "," << column() << "])";
         return oss.str();
     }
 };
 
-// ============================================================================
-//  Statements
-// ============================================================================
+// ========== Stmt Subclasses: Compound, If, While, For, Return, ExprStmt ==========
 
-/**
- * @class StmtNode
- * @brief Base class for statements (e.g., if, while, return).
- */
-class StmtNode : public ASTNode
-{
-public:
-    StmtNode(ASTNodeKind kind, size_t line, size_t column)
-        : ASTNode(kind, line, column)
-    {}
-    ~StmtNode() override = default;
-};
-
-/**
- * @class CompoundStmtNode
- * @brief A sequence of statements enclosed in braces { ... }.
- */
 class CompoundStmtNode : public StmtNode
 {
 private:
@@ -237,7 +288,7 @@ public:
         oss << "(CompoundStmt [";
         for (size_t i = 0; i < m_items.size(); i++) {
             if (i > 0) oss << ", ";
-            oss << m_items[i]->toString();
+            oss << (m_items[i] ? m_items[i]->toString() : "null");
         }
         oss << "] @[" << line() << "," << column() << "])";
         return oss.str();
@@ -253,7 +304,7 @@ class IfStmtNode : public StmtNode
 private:
     std::unique_ptr<ASTNode> m_condition;
     std::unique_ptr<ASTNode> m_thenBranch;
-    std::unique_ptr<ASTNode> m_elseBranch; // may be null
+    std::unique_ptr<ASTNode> m_elseBranch;
 
 public:
     IfStmtNode(std::unique_ptr<ASTNode> condition,
@@ -355,10 +406,6 @@ public:
     }
 };
 
-/**
- * @class ReturnStmtNode
- * @brief Represents a return statement (may have an expression).
- */
 class ReturnStmtNode : public StmtNode
 {
 private:
@@ -376,17 +423,13 @@ public:
     std::string toString() const override
     {
         std::ostringstream oss;
-        oss << "(ReturnStmt expr=" 
+        oss << "(ReturnStmt expr="
             << (m_expr ? m_expr->toString() : "null")
             << " @[" << line() << "," << column() << "])";
         return oss.str();
     }
 };
 
-/**
- * @class ExprStmtNode
- * @brief A statement consisting of a single expression (e.g., "x++;").
- */
 class ExprStmtNode : public StmtNode
 {
 private:
@@ -404,37 +447,27 @@ public:
     std::string toString() const override
     {
         std::ostringstream oss;
-        oss << "(ExprStmt expr=" 
-            << (m_expr ? m_expr->toString() : "null")
+        oss << "(ExprStmt expr=" << (m_expr ? m_expr->toString() : "null")
             << " @[" << line() << "," << column() << "])";
         return oss.str();
     }
 };
 
-// ============================================================================
-//  Expressions
-// ============================================================================
+// ========== Expression Nodes ==========
 
-/**
- * @class ExprNode
- * @brief Base class for expressions.
- */
 class ExprNode : public ASTNode
 {
 public:
     ExprNode(ASTNodeKind kind, size_t line, size_t column)
-        : ASTNode(kind, line, column) {}
-    ~ExprNode() override = default;
+        : ASTNode(kind, line, column)
+    {}
+    virtual ~ExprNode() = default;
 };
 
-/**
- * @class BinaryExprNode
- * @brief A binary expression, e.g., "left + right".
- */
 class BinaryExprNode : public ExprNode
 {
 private:
-    std::string m_op;  ///< string for operator, e.g. "+", "-", "=="
+    std::string m_op;
     std::unique_ptr<ASTNode> m_left;
     std::unique_ptr<ASTNode> m_right;
 
@@ -464,10 +497,6 @@ public:
     }
 };
 
-/**
- * @class UnaryExprNode
- * @brief A unary expression, e.g., "++x" or "-y".
- */
 class UnaryExprNode : public ExprNode
 {
 private:
@@ -496,14 +525,10 @@ public:
     }
 };
 
-/**
- * @class CallExprNode
- * @brief A function call, e.g., "foo(a, b, c)".
- */
 class CallExprNode : public ExprNode
 {
 private:
-    std::string m_callee; ///< function name
+    std::string m_callee;
     std::vector<std::unique_ptr<ASTNode>> m_args;
 
 public:
@@ -531,18 +556,13 @@ public:
     }
 };
 
-/**
- * @class LiteralExprNode
- * @brief Represents an integer, float, or string literal.
- */
 class LiteralExprNode : public ExprNode
 {
 private:
-    std::string m_value; ///< e.g. "42", "3.14", or "\"Hello\""
+    std::string m_value;
 
 public:
-    LiteralExprNode(const std::string &value,
-                    size_t line, size_t column)
+    LiteralExprNode(const std::string &value, size_t line, size_t column)
         : ExprNode(ASTNodeKind::LiteralExpr, line, column),
           m_value(value)
     {}
@@ -558,10 +578,6 @@ public:
     }
 };
 
-/**
- * @class IdentifierExprNode
- * @brief Represents a reference to a variable or function name in an expression.
- */
 class IdentifierExprNode : public ExprNode
 {
 private:
@@ -580,77 +596,6 @@ public:
         std::ostringstream oss;
         oss << "(IdentifierExpr name=" << m_name
             << " @[" << line() << "," << column() << "])";
-        return oss.str();
-    }
-};
-
-class DeclStmtNode : public StmtNode
-{
-private:
-    std::unique_ptr<VarDeclNode> m_varDecl;
-    std::unique_ptr<ExprNode> m_initExpr;
-
-public:
-    DeclStmtNode(std::unique_ptr<VarDeclNode> varDecl,
-                 std::unique_ptr<ExprNode> initExpr,
-                 size_t line, size_t col)
-        : StmtNode(ASTNodeKind::ExprStmt, line, col),  // or define a new ASTNodeKind::DeclStmt
-          m_varDecl(std::move(varDecl)),
-          m_initExpr(std::move(initExpr))
-    {}
-
-    const VarDeclNode* varDecl() const { return m_varDecl.get(); }
-    const ExprNode* initExpr() const { return m_initExpr.get(); }
-
-    std::string toString() const override
-    {
-        std::ostringstream oss;
-        oss << "(DeclStmt var=" << (m_varDecl ? m_varDecl->toString() : "null");
-        if (m_initExpr) {
-            oss << " init=" << m_initExpr->toString();
-        }
-        oss << " @[" << line() << "," << column() << "])";
-        return oss.str();
-    }
-};
-
-// ============================================================================
-//  The Root of a C Translation Unit
-// ============================================================================
-
-/**
- * @class TranslationUnitNode
- * @brief Represents the entire C file (list of global declarations).
- */
-class TranslationUnitNode : public ASTNode
-{
-private:
-    std::vector<std::unique_ptr<ASTNode>> m_decls;
-
-public:
-    TranslationUnitNode(size_t line, size_t column)
-        : ASTNode(ASTNodeKind::TranslationUnit, line, column)
-    {}
-
-    void addDeclaration(std::unique_ptr<ASTNode> decl)
-    {
-        m_decls.push_back(std::move(decl));
-    }
-
-    const std::vector<std::unique_ptr<ASTNode>> &declarations() const
-    {
-        return m_decls;
-    }
-
-    std::string toString() const override
-    {
-        std::ostringstream oss;
-        oss << "(TranslationUnit [";
-        for (size_t i = 0; i < m_decls.size(); i++) {
-            if (i > 0) oss << ", ";
-            oss << m_decls[i]->toString();
-        }
-        oss << "] @[" << line() << "," << column() << "])";
         return oss.str();
     }
 };

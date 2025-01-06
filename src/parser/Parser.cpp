@@ -4,34 +4,29 @@
  */
 
 #include "parser/Parser.h"
-
-///////////////////////////////////////////////////////////////////////////
-// Constructor
-///////////////////////////////////////////////////////////////////////////
+#include "ast/AST.h"
 
 Parser::Parser(const std::vector<Token> &tokens)
     : m_tokens(tokens), m_currentIndex(0)
 {
 }
 
-///////////////////////////////////////////////////////////////////////////
-// Utility Functions
-///////////////////////////////////////////////////////////////////////////
+// -------------------------------------------------------------------
+// Utility
+// -------------------------------------------------------------------
 
 const Token &Parser::currentToken() const
 {
     if (isAtEnd()) {
-        // Return the last token if at end,
-        // or throw if you prefer strict handling.
-        return m_tokens.back(); 
+        return m_tokens.back();
     }
     return m_tokens[m_currentIndex];
 }
 
 bool Parser::isAtEnd() const
 {
-    return (m_currentIndex >= m_tokens.size() 
-            || m_tokens[m_currentIndex].type() == TokenType::EOF_TOK);
+    return (m_currentIndex >= m_tokens.size() ||
+            m_tokens[m_currentIndex].type() == TokenType::EOF_TOK);
 }
 
 Token Parser::advance()
@@ -69,9 +64,9 @@ void Parser::error(const std::string &message) const
     throw std::runtime_error(msg);
 }
 
-///////////////////////////////////////////////////////////////////////////
-// Top-Level Entry: parseTranslationUnit
-///////////////////////////////////////////////////////////////////////////
+// -------------------------------------------------------------------
+// parseTranslationUnit
+// -------------------------------------------------------------------
 
 std::unique_ptr<TranslationUnitNode> Parser::parseTranslationUnit()
 {
@@ -91,15 +86,15 @@ std::unique_ptr<TranslationUnitNode> Parser::parseTranslationUnit()
     return root;
 }
 
-///////////////////////////////////////////////////////////////////////////
-// parseExternalDeclaration: function-def or global var
-///////////////////////////////////////////////////////////////////////////
+// -------------------------------------------------------------------
+// parseExternalDeclaration: function def or global var
+// -------------------------------------------------------------------
 
 std::unique_ptr<ASTNode> Parser::parseExternalDeclaration()
 {
     if (isTypeKeyword(currentToken().type()))
     {
-        Token typeTok = advance(); 
+        Token typeTok = advance();
         std::string typeStr = typeTok.lexeme();
 
         // Next must be an identifier (the function or variable name)
@@ -109,12 +104,11 @@ std::unique_ptr<ASTNode> Parser::parseExternalDeclaration()
         Token nameTok = advance();
         std::string nameStr = nameTok.lexeme();
 
-        // Check if next is '(' => function definition, else => global var
         if (match(TokenType::LPAREN)) {
-            // It's a function
+            // function definition
             return parseFunctionDefinition(typeStr, nameStr);
         } else {
-            // It's a global variable
+            // global var
             auto varDecl = parseVarDeclaration(typeStr, nameStr);
             // Expect semicolon
             expect(TokenType::SEMICOLON, "Expected ';' after global variable declaration");
@@ -210,9 +204,9 @@ std::unique_ptr<VarDeclNode> Parser::parseVarDeclaration(const std::string &type
     );
 }
 
-///////////////////////////////////////////////////////////////////////////
+// -------------------------------------------------------------------
 // parseStatement
-///////////////////////////////////////////////////////////////////////////
+// -------------------------------------------------------------------
 
 std::unique_ptr<StmtNode> Parser::parseStatement()
 {
@@ -256,7 +250,7 @@ std::unique_ptr<StmtNode> Parser::parseStatement()
         return parseReturnStatement();
     }
     else {
-        // Expression statement or empty statement
+        // expression statement or empty
         return parseExpressionStatement();
     }
 }
@@ -268,8 +262,7 @@ std::unique_ptr<StmtNode> Parser::parseStatement()
  */
 std::unique_ptr<StmtNode> Parser::parseLocalDeclarationStatement()
 {
-    // We already know currentToken() is a type
-    Token typeTok = advance(); // consume the type
+    Token typeTok = advance();
     std::string typeStr = typeTok.lexeme();
 
     // Next must be an identifier
@@ -279,7 +272,7 @@ std::unique_ptr<StmtNode> Parser::parseLocalDeclarationStatement()
     Token nameTok = advance();
     std::string nameStr = nameTok.lexeme();
 
-    // Optional initializer
+    // optional initializer
     std::unique_ptr<ExprNode> initExpr = nullptr;
     if (match(TokenType::ASSIGN)) {
         // parse an expression for initializer
@@ -289,7 +282,7 @@ std::unique_ptr<StmtNode> Parser::parseLocalDeclarationStatement()
     // Expect semicolon
     expect(TokenType::SEMICOLON, "Expected ';' after local variable declaration");
 
-    // Build a VarDeclNode
+    // Build VarDeclNode
     auto varDeclNode = std::make_unique<VarDeclNode>(
         typeStr,
         nameStr,
@@ -297,9 +290,8 @@ std::unique_ptr<StmtNode> Parser::parseLocalDeclarationStatement()
         currentToken().column()
     );
 
-    // If you want, you can store initExpr in a custom node type (e.g. `LocalVarDeclStmtNode`)
-    // for codegen to do an alloca + store. Here, let's just store it in a "DeclStmt" for simplicity.
-
+    // Return a DeclStmtNode with optional init
+    // We'll store initExpr as an ASTNode
     return std::make_unique<DeclStmtNode>(
         std::move(varDeclNode),
         std::move(initExpr),

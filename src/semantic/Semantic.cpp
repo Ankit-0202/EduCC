@@ -4,57 +4,34 @@
  */
 
 #include "semantic/Semantic.h"
-
-///////////////////////////////////////////////////////////////////////////
-// Constructor
-///////////////////////////////////////////////////////////////////////////
+#include "ast/AST.h"   // for DeclStmtNode, etc.
 
 SemanticAnalyzer::SemanticAnalyzer(TranslationUnitNode &root)
     : m_root(root)
 {
 }
 
-///////////////////////////////////////////////////////////////////////////
-// Public analyze() entry point
-///////////////////////////////////////////////////////////////////////////
-
 void SemanticAnalyzer::analyze()
 {
-    // Start with a global symbol table
     auto globalSymTable = std::make_shared<SymbolTable>();
-
-    // Analyze the translation unit
     analyzeTranslationUnit(m_root, globalSymTable);
 }
 
-///////////////////////////////////////////////////////////////////////////
-// Helper: Error
-///////////////////////////////////////////////////////////////////////////
-
 void SemanticAnalyzer::semanticError(ASTNode &node, const std::string &msg)
 {
-    std::string fullMsg = "[Semantic Error] " + msg + 
+    std::string fullMsg = "[Semantic Error] " + msg +
                           " at line " + std::to_string(node.line()) +
                           ", column " + std::to_string(node.column()) + ".";
     throw std::runtime_error(fullMsg);
 }
 
-///////////////////////////////////////////////////////////////////////////
-// analyzeTranslationUnit
-///////////////////////////////////////////////////////////////////////////
-
 void SemanticAnalyzer::analyzeTranslationUnit(TranslationUnitNode &unit,
                                               std::shared_ptr<SymbolTable> symTable)
 {
-    // For each top-level declaration, analyze
     for (auto &declPtr : unit.declarations()) {
         analyzeNode(*declPtr, symTable);
     }
 }
-
-///////////////////////////////////////////////////////////////////////////
-// analyzeNode: dispatch by kind
-///////////////////////////////////////////////////////////////////////////
 
 void SemanticAnalyzer::analyzeNode(ASTNode &node, std::shared_ptr<SymbolTable> symTable)
 {
@@ -86,31 +63,37 @@ void SemanticAnalyzer::analyzeNode(ASTNode &node, std::shared_ptr<SymbolTable> s
         case ASTNodeKind::ExprStmt:
             analyzeExprStmt(static_cast<ExprStmtNode&>(node), symTable);
             break;
-        // Expressions handled either inside statements or by direct calls:
+
+        // NEW: local declaration statement
+        case ASTNodeKind::DeclStmt:
+            analyzeDeclStmt(static_cast<DeclStmtNode&>(node), symTable);
+            break;
+
+        // Expression nodes
         case ASTNodeKind::BinaryExpr:
         case ASTNodeKind::UnaryExpr:
         case ASTNodeKind::CallExpr:
         case ASTNodeKind::LiteralExpr:
         case ASTNodeKind::IdentifierExpr:
-            // It's unlikely we get an expression node at top-level, but let's handle anyway
             analyzeExpr(static_cast<ExprNode&>(node), symTable);
             break;
+
         case ASTNodeKind::TranslationUnit:
-            // Already handled in parseTranslationUnit
+            // already handled
             break;
+
         default:
-            // Unrecognized node
             semanticError(node, "Unrecognized AST node kind");
     }
 }
 
-///////////////////////////////////////////////////////////////////////////
+// -------------------------------------------------------------------
 // Declarations
-///////////////////////////////////////////////////////////////////////////
+// -------------------------------------------------------------------
 
-void SemanticAnalyzer::analyzeVarDecl(VarDeclNode &node, std::shared_ptr<SymbolTable> symTable)
+void SemanticAnalyzer::analyzeVarDecl(VarDeclNode &node,
+                                      std::shared_ptr<SymbolTable> symTable)
 {
-    // Insert symbol into current scope
     Symbol sym(SymbolKind::Variable, node.varName(), node.typeName());
     try {
         symTable->addSymbol(sym);
@@ -119,80 +102,104 @@ void SemanticAnalyzer::analyzeVarDecl(VarDeclNode &node, std::shared_ptr<SymbolT
     }
 }
 
-void SemanticAnalyzer::analyzeFunctionDecl(FunctionDeclNode &node, std::shared_ptr<SymbolTable> symTable)
+void SemanticAnalyzer::analyzeFunctionDecl(FunctionDeclNode &node,
+                                           std::shared_ptr<SymbolTable> symTable)
 {
-    // Insert function symbol
     Symbol sym(SymbolKind::Function, node.funcName(), node.returnType());
     try {
         symTable->addSymbol(sym);
     } catch (const std::runtime_error &e) {
         semanticError(node, e.what());
     }
-    // We won't do full param checks here; that can happen in function def.
 }
 
-void SemanticAnalyzer::analyzeFunctionDef(FunctionDefNode &node, std::shared_ptr<SymbolTable> symTable)
+void SemanticAnalyzer::analyzeFunctionDef(FunctionDefNode &node,
+                                          std::shared_ptr<SymbolTable> symTable)
 {
-    // The child function decl
     auto decl = node.decl();
     if (!decl) {
         semanticError(node, "FunctionDefNode has null decl()");
     }
-    // Insert the function symbol in the global table
     Symbol funcSym(SymbolKind::Function, decl->funcName(), decl->returnType());
     try {
         symTable->addSymbol(funcSym);
-    } catch (const std::runtime_error &e) {
-        semanticError(node, e.what());
+    } catch (const std::runtime_error &ex) {
+        semanticError(node, ex.what());
     }
 
-    // Create a new scope for function parameters & local variables
     auto funcScope = std::make_shared<SymbolTable>(symTable);
-
-    // Add parameters
+    // add parameters
     for (size_t i = 0; i < decl->paramCount(); i++) {
         Symbol paramSym(SymbolKind::Variable, decl->paramName(i), decl->paramType(i));
         try {
             funcScope->addSymbol(paramSym);
-        } catch (const std::runtime_error &e) {
-            semanticError(node, e.what());
+        } catch (const std::runtime_error &ex) {
+            semanticError(node, ex.what());
         }
     }
 
-    // analyze the body (which is a statement, typically a CompoundStmt)
     if (!node.body()) {
         semanticError(node, "Function definition has no body");
     }
     analyzeNode(*(const_cast<ASTNode*>(node.body())), funcScope);
 }
 
-///////////////////////////////////////////////////////////////////////////
-// Statements
-///////////////////////////////////////////////////////////////////////////
+// -------------------------------------------------------------------
+// DeclStmt (NEW) - local variable declaration
+// -------------------------------------------------------------------
+void SemanticAnalyzer::analyzeDeclStmt(DeclStmtNode &node,
+                                       std::shared_ptr<SymbolTable> symTable)
+{
+    if (!node.varDecl()) {
+        semanticError(node, "DeclStmtNode has null VarDeclNode");
+    }
 
+    // Insert variable into symbol table
+    Symbol sym(SymbolKind::Variable,
+               node.varDecl()->varName(),
+               node.varDecl()->typeName());
+    try {
+        symTable->addSymbol(sym);
+    } catch (const std::runtime_error &ex) {
+        semanticError(node, ex.what());
+    }
+
+    // If there's an initializer expression, analyze it
+    if (node.initExpr()) {
+        // We treat it as an expression
+        auto exprNode = dynamic_cast<ExprNode*>(const_cast<ASTNode*>(node.initExpr()));
+        if (exprNode) {
+            analyzeExpr(*exprNode, symTable);
+        } else {
+            semanticError(node, "Initializer is not an expression");
+        }
+    }
+}
+
+// -------------------------------------------------------------------
+// Statements
+// -------------------------------------------------------------------
 void SemanticAnalyzer::analyzeCompoundStmt(CompoundStmtNode &node,
                                            std::shared_ptr<SymbolTable> symTable)
 {
-    // new scope for local declarations
     auto blockScope = std::make_shared<SymbolTable>(symTable);
-
-    // analyze each item
     for (auto &item : node.items()) {
         analyzeNode(*item, blockScope);
     }
 }
 
-void SemanticAnalyzer::analyzeIfStmt(IfStmtNode &node, std::shared_ptr<SymbolTable> symTable)
+void SemanticAnalyzer::analyzeIfStmt(IfStmtNode &node,
+                                     std::shared_ptr<SymbolTable> symTable)
 {
-    // analyze condition as an expression
     if (node.condition()) {
-        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)node.condition()), symTable);
+        auto condExpr = dynamic_cast<ExprNode*>(const_cast<ASTNode*>(node.condition()));
+        if (condExpr) {
+            analyzeExpr(*condExpr, symTable);
+        }
     }
-    // then branch
     if (node.thenBranch()) {
         analyzeNode(*(ASTNode*)node.thenBranch(), symTable);
     }
-    // else branch
     if (node.elseBranch()) {
         analyzeNode(*(ASTNode*)node.elseBranch(), symTable);
     }
@@ -201,11 +208,10 @@ void SemanticAnalyzer::analyzeIfStmt(IfStmtNode &node, std::shared_ptr<SymbolTab
 void SemanticAnalyzer::analyzeWhileStmt(WhileStmtNode &node,
                                         std::shared_ptr<SymbolTable> symTable)
 {
-    // analyze condition
     if (node.condition()) {
-        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)node.condition()), symTable);
+        auto condExpr = dynamic_cast<ExprNode*>(const_cast<ASTNode*>(node.condition()));
+        if (condExpr) analyzeExpr(*condExpr, symTable);
     }
-    // analyze body
     if (node.body()) {
         analyzeNode(*(ASTNode*)node.body(), symTable);
     }
@@ -214,22 +220,19 @@ void SemanticAnalyzer::analyzeWhileStmt(WhileStmtNode &node,
 void SemanticAnalyzer::analyzeForStmt(ForStmtNode &node,
                                       std::shared_ptr<SymbolTable> symTable)
 {
-    // for statements create a new scope for their init or loop variables
     auto forScope = std::make_shared<SymbolTable>(symTable);
 
-    // init
     if (node.init()) {
         analyzeNode(*(ASTNode*)node.init(), forScope);
     }
-    // cond
     if (node.condition()) {
-        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)node.condition()), forScope);
+        auto condExpr = dynamic_cast<ExprNode*>(const_cast<ASTNode*>(node.condition()));
+        if (condExpr) analyzeExpr(*condExpr, forScope);
     }
-    // incr
     if (node.increment()) {
-        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)node.increment()), forScope);
+        auto incrExpr = dynamic_cast<ExprNode*>(const_cast<ASTNode*>(node.increment()));
+        if (incrExpr) analyzeExpr(*incrExpr, forScope);
     }
-    // body
     if (node.body()) {
         analyzeNode(*(ASTNode*)node.body(), forScope);
     }
@@ -238,29 +241,26 @@ void SemanticAnalyzer::analyzeForStmt(ForStmtNode &node,
 void SemanticAnalyzer::analyzeReturnStmt(ReturnStmtNode &node,
                                          std::shared_ptr<SymbolTable> symTable)
 {
-    // If there's an expression, analyze it
     if (node.expr()) {
-        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)node.expr()), symTable);
+        auto exprPtr = dynamic_cast<ExprNode*>(const_cast<ASTNode*>(node.expr()));
+        if (exprPtr) analyzeExpr(*exprPtr, symTable);
     }
-    // Real type checking would confirm that the returned expression
-    // matches the function's return type, but we haven't tracked the
-    // function’s declared type in the symbol table scope in detail here.
 }
 
 void SemanticAnalyzer::analyzeExprStmt(ExprStmtNode &node,
                                        std::shared_ptr<SymbolTable> symTable)
 {
-    // If there's an expression, analyze it
     if (node.expr()) {
-        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)node.expr()), symTable);
+        auto exprPtr = dynamic_cast<ExprNode*>(const_cast<ASTNode*>(node.expr()));
+        if (exprPtr) analyzeExpr(*exprPtr, symTable);
     }
 }
 
-///////////////////////////////////////////////////////////////////////////
+// -------------------------------------------------------------------
 // Expression Analysis
-///////////////////////////////////////////////////////////////////////////
-
-void SemanticAnalyzer::analyzeExpr(ExprNode &expr, std::shared_ptr<SymbolTable> symTable)
+// -------------------------------------------------------------------
+void SemanticAnalyzer::analyzeExpr(ExprNode &expr,
+                                   std::shared_ptr<SymbolTable> symTable)
 {
     switch (expr.kind()) {
         case ASTNodeKind::BinaryExpr:
@@ -283,30 +283,31 @@ void SemanticAnalyzer::analyzeExpr(ExprNode &expr, std::shared_ptr<SymbolTable> 
     }
 }
 
-void SemanticAnalyzer::analyzeBinaryExpr(BinaryExprNode &expr, std::shared_ptr<SymbolTable> symTable)
+void SemanticAnalyzer::analyzeBinaryExpr(BinaryExprNode &expr,
+                                         std::shared_ptr<SymbolTable> symTable)
 {
-    // left
     if (expr.left()) {
-        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)expr.left()), symTable);
+        auto leftExpr = dynamic_cast<ExprNode*>(const_cast<ASTNode*>(expr.left()));
+        if (leftExpr) analyzeExpr(*leftExpr, symTable);
     }
-    // right
     if (expr.right()) {
-        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)expr.right()), symTable);
+        auto rightExpr = dynamic_cast<ExprNode*>(const_cast<ASTNode*>(expr.right()));
+        if (rightExpr) analyzeExpr(*rightExpr, symTable);
     }
-    // Type checks could go here
 }
 
-void SemanticAnalyzer::analyzeUnaryExpr(UnaryExprNode &expr, std::shared_ptr<SymbolTable> symTable)
+void SemanticAnalyzer::analyzeUnaryExpr(UnaryExprNode &expr,
+                                        std::shared_ptr<SymbolTable> symTable)
 {
     if (expr.operand()) {
-        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)expr.operand()), symTable);
+        auto opExpr = dynamic_cast<ExprNode*>(const_cast<ASTNode*>(expr.operand()));
+        if (opExpr) analyzeExpr(*opExpr, symTable);
     }
-    // Check operator validity, e.g. can't increment a string literal, etc.
 }
 
-void SemanticAnalyzer::analyzeCallExpr(CallExprNode &expr, std::shared_ptr<SymbolTable> symTable)
+void SemanticAnalyzer::analyzeCallExpr(CallExprNode &expr,
+                                       std::shared_ptr<SymbolTable> symTable)
 {
-    // Check if function name is declared
     auto sym = symTable->lookup(expr.callee());
     if (!sym) {
         semanticError(expr, "Undefined function '" + expr.callee() + "'");
@@ -314,27 +315,25 @@ void SemanticAnalyzer::analyzeCallExpr(CallExprNode &expr, std::shared_ptr<Symbo
         semanticError(expr, "'" + expr.callee() + "' is not a function");
     }
 
-    // analyze each argument
     for (auto &arg : expr.args()) {
-        analyzeExpr(*const_cast<ExprNode*>((const ExprNode*)arg.get()), symTable);
+        auto argExpr = dynamic_cast<ExprNode*>(arg.get());
+        if (argExpr) analyzeExpr(*argExpr, symTable);
     }
-    // Real type checking would compare argument types vs. function param types
 }
 
-void SemanticAnalyzer::analyzeLiteralExpr(LiteralExprNode &expr, std::shared_ptr<SymbolTable> symTable)
+void SemanticAnalyzer::analyzeLiteralExpr(LiteralExprNode &expr,
+                                          std::shared_ptr<SymbolTable> symTable)
 {
-    // Nothing special for basic literal
     (void) symTable;
 }
 
-void SemanticAnalyzer::analyzeIdentifierExpr(IdentifierExprNode &expr, std::shared_ptr<SymbolTable> symTable)
+void SemanticAnalyzer::analyzeIdentifierExpr(IdentifierExprNode &expr,
+                                             std::shared_ptr<SymbolTable> symTable)
 {
-    // Check if this identifier is declared as a variable
     auto sym = symTable->lookup(expr.name());
     if (!sym) {
         semanticError(expr, "Undefined variable '" + expr.name() + "'");
     }
-    // else, we have a valid variable or function. If it's a function, but used as a variable, that's an error
     if (sym->kind != SymbolKind::Variable) {
         semanticError(expr, "'" + sym->name + "' is not a variable");
     }
